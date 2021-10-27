@@ -42,6 +42,9 @@ static fml::jni::ScopedJavaGlobalRef<jclass>* g_flutter_callback_info_class =
 
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_flutter_jni_class = nullptr;
 
+static fml::jni::ScopedJavaGlobalRef<jclass>* g_java_weak_reference_class =
+    nullptr;
+
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_texture_wrapper_class = nullptr;
 
 static fml::jni::ScopedJavaGlobalRef<jclass>* g_java_long_class = nullptr;
@@ -87,6 +90,8 @@ static jmethodID g_on_begin_frame_method = nullptr;
 
 static jmethodID g_on_end_frame_method = nullptr;
 
+static jmethodID g_java_weak_reference_get_method = nullptr;
+
 static jmethodID g_attach_to_gl_context_method = nullptr;
 
 static jmethodID g_update_tex_image_method = nullptr;
@@ -118,15 +123,12 @@ static jmethodID g_mutators_stack_push_cliprect_method = nullptr;
 static jmethodID g_mutators_stack_push_cliprrect_method = nullptr;
 
 // Called By Java
-static jlong AttachJNI(JNIEnv* env,
-                       jclass clazz,
-                       jobject flutterJNI,
-                       jboolean is_background_view) {
+static jlong AttachJNI(JNIEnv* env, jclass clazz, jobject flutterJNI) {
   fml::jni::JavaObjectWeakGlobalRef java_object(env, flutterJNI);
   std::shared_ptr<PlatformViewAndroidJNI> jni_facade =
       std::make_shared<PlatformViewAndroidJNIImpl>(java_object);
   auto shell_holder = std::make_unique<AndroidShellHolder>(
-      FlutterMain::Get().GetSettings(), jni_facade, is_background_view);
+      FlutterMain::Get().GetSettings(), jni_facade);
   if (shell_holder->IsValid()) {
     return reinterpret_cast<jlong>(shell_holder.release());
   } else {
@@ -152,7 +154,8 @@ static jobject SpawnJNI(JNIEnv* env,
                         jobject jcaller,
                         jlong shell_holder,
                         jstring jEntrypoint,
-                        jstring jLibraryUrl) {
+                        jstring jLibraryUrl,
+                        jstring jInitialRoute) {
   jobject jni = env->NewObject(g_flutter_jni_class->obj(), g_jni_constructor);
   if (jni == nullptr) {
     FML_LOG(ERROR) << "Could not create a FlutterJNI instance";
@@ -165,9 +168,10 @@ static jobject SpawnJNI(JNIEnv* env,
 
   auto entrypoint = fml::jni::JavaStringToString(env, jEntrypoint);
   auto libraryUrl = fml::jni::JavaStringToString(env, jLibraryUrl);
+  auto initial_route = fml::jni::JavaStringToString(env, jInitialRoute);
 
-  auto spawned_shell_holder =
-      ANDROID_SHELL_HOLDER->Spawn(jni_facade, entrypoint, libraryUrl);
+  auto spawned_shell_holder = ANDROID_SHELL_HOLDER->Spawn(
+      jni_facade, entrypoint, libraryUrl, initial_route);
 
   if (spawned_shell_holder == nullptr || !spawned_shell_holder->IsValid()) {
     FML_LOG(ERROR) << "Could not spawn Shell";
@@ -452,8 +456,8 @@ static void RegisterTexture(JNIEnv* env,
                             jlong texture_id,
                             jobject surface_texture) {
   ANDROID_SHELL_HOLDER->GetPlatformView()->RegisterExternalTexture(
-      static_cast<int64_t>(texture_id),                        //
-      fml::jni::JavaObjectWeakGlobalRef(env, surface_texture)  //
+      static_cast<int64_t>(texture_id),                             //
+      fml::jni::ScopedJavaGlobalRef<jobject>(env, surface_texture)  //
   );
 }
 
@@ -608,7 +612,7 @@ bool RegisterApi(JNIEnv* env) {
       // Start of methods from FlutterJNI
       {
           .name = "nativeAttach",
-          .signature = "(Lio/flutter/embedding/engine/FlutterJNI;Z)J",
+          .signature = "(Lio/flutter/embedding/engine/FlutterJNI;)J",
           .fnPtr = reinterpret_cast<void*>(&AttachJNI),
       },
       {
@@ -618,7 +622,8 @@ bool RegisterApi(JNIEnv* env) {
       },
       {
           .name = "nativeSpawn",
-          .signature = "(JLjava/lang/String;Ljava/lang/String;)Lio/flutter/"
+          .signature = "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/"
+                       "String;)Lio/flutter/"
                        "embedding/engine/FlutterJNI;",
           .fnPtr = reinterpret_cast<void*>(&SpawnJNI),
       },
@@ -714,8 +719,8 @@ bool RegisterApi(JNIEnv* env) {
       },
       {
           .name = "nativeRegisterTexture",
-          .signature = "(JJLio/flutter/embedding/engine/renderer/"
-                       "SurfaceTextureWrapper;)V",
+          .signature = "(JJLjava/lang/ref/"
+                       "WeakReference;)V",
           .fnPtr = reinterpret_cast<void*>(&RegisterTexture),
       },
       {
@@ -1007,6 +1012,20 @@ bool PlatformViewAndroid::Register(JNIEnv* env) {
     return false;
   }
 
+  g_java_weak_reference_class = new fml::jni::ScopedJavaGlobalRef<jclass>(
+      env, env->FindClass("java/lang/ref/WeakReference"));
+  if (g_java_weak_reference_class->is_null()) {
+    FML_LOG(ERROR) << "Could not locate WeakReference class";
+    return false;
+  }
+
+  g_java_weak_reference_get_method = env->GetMethodID(
+      g_java_weak_reference_class->obj(), "get", "()Ljava/lang/Object;");
+  if (g_java_weak_reference_get_method == nullptr) {
+    FML_LOG(ERROR) << "Could not locate WeakReference.get method";
+    return false;
+  }
+
   g_texture_wrapper_class = new fml::jni::ScopedJavaGlobalRef<jclass>(
       env, env->FindClass(
                "io/flutter/embedding/engine/renderer/SurfaceTextureWrapper"));
@@ -1215,12 +1234,18 @@ void PlatformViewAndroidJNIImpl::FlutterViewOnPreEngineRestart() {
 }
 
 void PlatformViewAndroidJNIImpl::SurfaceTextureAttachToGLContext(
-    JavaWeakGlobalRef surface_texture,
+    JavaLocalRef surface_texture,
     int textureId) {
   JNIEnv* env = fml::jni::AttachCurrentThread();
 
-  fml::jni::ScopedJavaLocalRef<jobject> surface_texture_local_ref =
-      surface_texture.get(env);
+  if (surface_texture.is_null()) {
+    return;
+  }
+
+  fml::jni::ScopedJavaLocalRef<jobject> surface_texture_local_ref(
+      env, env->CallObjectMethod(surface_texture.obj(),
+                                 g_java_weak_reference_get_method));
+
   if (surface_texture_local_ref.is_null()) {
     return;
   }
@@ -1232,11 +1257,16 @@ void PlatformViewAndroidJNIImpl::SurfaceTextureAttachToGLContext(
 }
 
 void PlatformViewAndroidJNIImpl::SurfaceTextureUpdateTexImage(
-    JavaWeakGlobalRef surface_texture) {
+    JavaLocalRef surface_texture) {
   JNIEnv* env = fml::jni::AttachCurrentThread();
 
-  fml::jni::ScopedJavaLocalRef<jobject> surface_texture_local_ref =
-      surface_texture.get(env);
+  if (surface_texture.is_null()) {
+    return;
+  }
+
+  fml::jni::ScopedJavaLocalRef<jobject> surface_texture_local_ref(
+      env, env->CallObjectMethod(surface_texture.obj(),
+                                 g_java_weak_reference_get_method));
   if (surface_texture_local_ref.is_null()) {
     return;
   }
@@ -1260,12 +1290,17 @@ SkSize ScaleToFill(float scaleX, float scaleY) {
 }
 
 void PlatformViewAndroidJNIImpl::SurfaceTextureGetTransformMatrix(
-    JavaWeakGlobalRef surface_texture,
+    JavaLocalRef surface_texture,
     SkMatrix& transform) {
   JNIEnv* env = fml::jni::AttachCurrentThread();
 
-  fml::jni::ScopedJavaLocalRef<jobject> surface_texture_local_ref =
-      surface_texture.get(env);
+  if (surface_texture.is_null()) {
+    return;
+  }
+
+  fml::jni::ScopedJavaLocalRef<jobject> surface_texture_local_ref(
+      env, env->CallObjectMethod(surface_texture.obj(),
+                                 g_java_weak_reference_get_method));
   if (surface_texture_local_ref.is_null()) {
     return;
   }
@@ -1290,11 +1325,16 @@ void PlatformViewAndroidJNIImpl::SurfaceTextureGetTransformMatrix(
 }
 
 void PlatformViewAndroidJNIImpl::SurfaceTextureDetachFromGLContext(
-    JavaWeakGlobalRef surface_texture) {
+    JavaLocalRef surface_texture) {
   JNIEnv* env = fml::jni::AttachCurrentThread();
 
-  fml::jni::ScopedJavaLocalRef<jobject> surface_texture_local_ref =
-      surface_texture.get(env);
+  if (surface_texture.is_null()) {
+    return;
+  }
+
+  fml::jni::ScopedJavaLocalRef<jobject> surface_texture_local_ref(
+      env, env->CallObjectMethod(surface_texture.obj(),
+                                 g_java_weak_reference_get_method));
   if (surface_texture_local_ref.is_null()) {
     return;
   }

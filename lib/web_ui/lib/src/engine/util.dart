@@ -2,12 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+@JS()
+library util;
+
 import 'dart:async';
 import 'dart:html' as html;
 import 'dart:js_util' as js_util;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:js/js.dart';
 import 'package:ui/ui.dart' as ui;
 
 import 'browser_detection.dart';
@@ -390,7 +394,8 @@ String colorComponentsToCssString(int r, int g, int b, int a) {
 /// We need this in [BitmapCanvas] and [RecordingCanvas] to swallow this
 /// Firefox exception without interfering with others (potentially useful
 /// for the programmer).
-bool isNsErrorFailureException(dynamic e) {
+bool isNsErrorFailureException(Object e) {
+  // ignore: implicit_dynamic_function
   return js_util.getProperty(e, 'name') == 'NS_ERROR_FAILURE';
 }
 
@@ -422,8 +427,20 @@ const Set<String> _genericFontFamilies = <String>{
 ///
 /// For iOS, default to -apple-system, where it should be available, otherwise
 /// default to Arial. BlinkMacSystemFont is used for Chrome on iOS.
-final String _fallbackFontFamily =
-    isMacOrIOS ? '-apple-system, BlinkMacSystemFont' : 'Arial';
+String get _fallbackFontFamily {
+  if (isIOS15) {
+    // Remove the "-apple-system" fallback font because it causes a crash in
+    // iOS 15.
+    //
+    // See github issue: https://github.com/flutter/flutter/issues/90705
+    // See webkit bug: https://bugs.webkit.org/show_bug.cgi?id=231686
+    return 'BlinkMacSystemFont';
+  }
+  if (isMacOrIOS) {
+    return '-apple-system, BlinkMacSystemFont';
+  }
+  return 'Arial';
+}
 
 /// Create a font-family string appropriate for CSS.
 ///
@@ -559,4 +576,106 @@ String blurSigmasToCssString(double sigmaX, double sigmaY) {
 /// Checks if the dynamic [object] is equal to null.
 bool unsafeIsNull(dynamic object) {
   return object == null;
+}
+
+/// A typed variant of [html.Window.fetch].
+Future<html.Body> httpFetch(String url) async {
+  final dynamic result = await html.window.fetch(url);
+  return result as html.Body;
+}
+
+/// Extensions to [Map] that make it easier to treat it as a JSON object. The
+/// keys are `dynamic` because when JSON is deserialized from method channels
+/// it arrives as `Map<dynamic, dynamic>`.
+// TODO(yjbanov): use Json typedef when type aliases are shipped
+extension JsonExtensions on Map<dynamic, dynamic> {
+  Map<String, dynamic> readJson(String propertyName) {
+    return this[propertyName] as Map<String, dynamic>;
+  }
+
+  Map<String, dynamic>? tryJson(String propertyName) {
+    return this[propertyName] as Map<String, dynamic>?;
+  }
+
+  Map<dynamic, dynamic> readDynamicJson(String propertyName) {
+    return this[propertyName] as Map<dynamic, dynamic>;
+  }
+
+  Map<dynamic, dynamic>? tryDynamicJson(String propertyName) {
+    return this[propertyName] as Map<dynamic, dynamic>?;
+  }
+
+  List<dynamic> readList(String propertyName) {
+    return this[propertyName] as List<dynamic>;
+  }
+
+  List<dynamic>? tryList(String propertyName) {
+    return this[propertyName] as List<dynamic>?;
+  }
+
+  List<T> castList<T>(String propertyName) {
+    return (this[propertyName] as List<dynamic>).cast<T>();
+  }
+
+  List<T>? tryCastList<T>(String propertyName) {
+    final List<dynamic>? rawList = tryList(propertyName);
+    if (rawList == null) {
+      return null;
+    }
+    return rawList.cast<T>();
+  }
+
+  String readString(String propertyName) {
+    return this[propertyName] as String;
+  }
+
+  String? tryString(String propertyName) {
+    return this[propertyName] as String?;
+  }
+
+  bool readBool(String propertyName) {
+    return this[propertyName] as bool;
+  }
+
+  bool? tryBool(String propertyName) {
+    return this[propertyName] as bool?;
+  }
+
+  int readInt(String propertyName) {
+    return this[propertyName] as int;
+  }
+
+  int? tryInt(String propertyName) {
+    return this[propertyName] as int?;
+  }
+
+  double readDouble(String propertyName) {
+    return this[propertyName] as double;
+  }
+
+  double? tryDouble(String propertyName) {
+    return this[propertyName] as double?;
+  }
+}
+
+typedef JsParseFloat = num? Function(String source);
+
+@JS('parseFloat')
+external JsParseFloat get _jsParseFloat;
+
+/// Parses a string [source] into a double.
+///
+/// Uses the JavaScript `parseFloat` function instead of Dart's [double.parse]
+/// because the latter can't parse strings like "20px".
+///
+/// Returns null if it fails to parse.
+num? parseFloat(String source) {
+  // Using JavaScript's `parseFloat` here because it can parse values
+  // like "20px", while Dart's `double.tryParse` fails.
+  final num? result = _jsParseFloat(source);
+
+  if (result == null || result.isNaN) {
+    return null;
+  }
+  return result;
 }

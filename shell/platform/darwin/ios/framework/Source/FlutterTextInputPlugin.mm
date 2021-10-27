@@ -51,6 +51,7 @@ static NSString* const kSecureTextEntry = @"obscureText";
 static NSString* const kKeyboardType = @"inputType";
 static NSString* const kKeyboardAppearance = @"keyboardAppearance";
 static NSString* const kInputAction = @"inputAction";
+static NSString* const kEnableDeltaModel = @"enableDeltaModel";
 
 static NSString* const kSmartDashesType = @"smartDashesType";
 static NSString* const kSmartQuotesType = @"smartQuotesType";
@@ -159,8 +160,9 @@ static UIReturnKeyType ToUIReturnKeyType(NSString* inputType) {
 }
 
 static UITextContentType ToUITextContentType(NSArray<NSString*>* hints) {
-  if (hints == nil || hints.count == 0) {
-    return @"";
+  if (!hints || hints.count == 0) {
+    // If no hints are specified, use the default content type nil.
+    return nil;
   }
 
   NSString* hint = hints[0];
@@ -286,18 +288,55 @@ static NSString* autofillIdFromDictionary(NSDictionary* dictionary) {
   return [dictionary[kSecureTextEntry] boolValue] ? @"password" : nil;
 }
 
-// There're 2 types of autofills on native iOS:
-// - Regular autofill, includes contact information autofill and
-//   one-time-code autofill, takes place in the form of predictive
-//   text in the quick type bar. This type of autofill does not save
-//   user input.
+// # Autofill Implementation Notes:
+//
+// Currently there're 2 types of autofills on iOS:
+// - Regular autofill, including contact information and one-time-code,
+//   takes place in the form of predictive text in the quick type bar.
+//   This type of autofill does not save user input, and the keyboard
+//   currently only populates the focused field when a predictive text entry
+//   is selected by the user.
+//
 // - Password autofill, includes automatic strong password and regular
 //   password autofill. The former happens automatically when a
-//   "new password" field is detected, and only that password field
-//   will be populated. The latter appears in the quick type bar when
-//   an eligible input field becomes the first responder, and may
+//   "new password" field is detected and focused, and only that password
+//   field will be populated. The latter appears in the quick type bar when
+//   an eligible input field (which either has a UITextContentTypePassword
+//   contentType, or is a secure text entry) becomes the first responder, and may
 //   fill both the username and the password fields. iOS will attempt
-//   to save user input for both kinds of password fields.
+//   to save user input for both kinds of password fields. It's relatively
+//   tricky to deal with password autofill since it can autofill more than one
+//   field at a time and may employ heuristics based on what other text fields
+//   are in the same view controller.
+//
+// When a flutter text field is focused, and autofill is not explicitly disabled
+// for it ("autofillable"), the framework collects its attributes and checks if
+// it's in an AutofillGroup, and collects the attributes of other autofillable
+// text fields in the same AutofillGroup if so. The attributes are sent to the
+// text input plugin via a "TextInput.setClient" platform channel message. If
+// autofill is disabled for a text field, its "autofill" field will be nil in
+// the configuration json.
+//
+// The text input plugin then tries to determine which kind of autofill the text
+// field needs. If the AutofillGroup the text field belongs to contains an
+// autofillable text field that's password related, this text 's autofill type
+// will be FlutterAutofillTypePassword. If autofill is disabled for a text field,
+// then its type will be FlutterAutofillTypeNone. Otherwise the text field will
+// have an autofill type of FlutterAutofillTypeRegular.
+//
+// The text input plugin creates a new UIView for every FlutterAutofillTypeNone
+// text field. The UIView instance is never reused for other flutter text fields
+// since the software keyboard often uses the identity of a UIView to distinguish
+// different views and provides the same predictive text suggestions or restore
+// the composing region if a UIView is reused for a different flutter text field.
+//
+// The text input plugin creates a new "autofill context" if the text field has
+// the type of FlutterAutofillTypePassword, to represent the AutofillGroup of
+// the text field, and creates one FlutterTextInputView for every text field in
+// the AutofillGroup.
+//
+// The text input plugin will try to reuse a UIView if a flutter text field's
+// type is FlutterAutofillTypeRegular, and has the same autofill id.
 typedef NS_ENUM(NSInteger, FlutterAutofillType) {
   // The field does not have autofillable content. Additionally if
   // the field is currently in the autofill context, it will be
@@ -309,13 +348,15 @@ typedef NS_ENUM(NSInteger, FlutterAutofillType) {
 
 static BOOL isFieldPasswordRelated(NSDictionary* configuration) {
   if (@available(iOS 10.0, *)) {
+    // Autofill is explicitly disabled if the id isn't present.
+    if (!autofillIdFromDictionary(configuration)) {
+      return NO;
+    }
+
     BOOL isSecureTextEntry = [configuration[kSecureTextEntry] boolValue];
     if (isSecureTextEntry)
       return YES;
 
-    if (!autofillIdFromDictionary(configuration)) {
-      return NO;
-    }
     NSDictionary* autofill = configuration[kAutofillProperties];
     UITextContentType contentType = ToUITextContentType(autofill[kAutofillHints]);
 
@@ -349,7 +390,8 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   if (@available(iOS 10.0, *)) {
     NSDictionary* autofill = configuration[kAutofillProperties];
     UITextContentType contentType = ToUITextContentType(autofill[kAutofillHints]);
-    return [contentType isEqualToString:@""] ? FlutterAutofillTypeNone : FlutterAutofillTypeRegular;
+    return !autofill || [contentType isEqualToString:@""] ? FlutterAutofillTypeNone
+                                                          : FlutterAutofillTypeRegular;
   }
 
   return FlutterAutofillTypeNone;
@@ -576,6 +618,7 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
     _keyboardType = UIKeyboardTypeDefault;
     _returnKeyType = UIReturnKeyDone;
     _secureTextEntry = NO;
+    _enableDeltaModel = NO;
     _accessibilityEnabled = NO;
     _decommissioned = NO;
     if (@available(iOS 11.0, *)) {
@@ -604,6 +647,7 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   NSDictionary* autofill = configuration[kAutofillProperties];
 
   self.secureTextEntry = [configuration[kSecureTextEntry] boolValue];
+  self.enableDeltaModel = [configuration[kEnableDeltaModel] boolValue];
 
   _isSystemKeyboardEnabled = shouldShowSystemKeyboard(inputType);
   self.keyboardType = ToUIKeyboardType(inputType);
@@ -751,11 +795,12 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
            withEvent:(UIPressesEvent*)event API_AVAILABLE(ios(9.0)) {
   if (@available(iOS 13.4, *)) {
     for (UIPress* press in presses) {
-      [_textInputDelegate handlePressEvent:[[FlutterUIPressProxy alloc] initWithPress:press
-                                                                            withEvent:event]
-                                nextAction:^() {
-                                  [super pressesBegan:[NSSet setWithObject:press] withEvent:event];
-                                }];
+      [_textInputDelegate
+          handlePressEvent:[[[FlutterUIPressProxy alloc] initWithPress:press
+                                                             withEvent:event] autorelease]
+                nextAction:^() {
+                  [super pressesBegan:[NSSet setWithObject:press] withEvent:event];
+                }];
     }
   } else {
     [super pressesBegan:presses withEvent:event];
@@ -767,7 +812,8 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   if (@available(iOS 13.4, *)) {
     for (UIPress* press in presses) {
       [_textInputDelegate
-          handlePressEvent:[[FlutterUIPressProxy alloc] initWithPress:press withEvent:event]
+          handlePressEvent:[[[FlutterUIPressProxy alloc] initWithPress:press
+                                                             withEvent:event] autorelease]
                 nextAction:^() {
                   [super pressesChanged:[NSSet setWithObject:press] withEvent:event];
                 }];
@@ -781,11 +827,12 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
            withEvent:(UIPressesEvent*)event API_AVAILABLE(ios(9.0)) {
   if (@available(iOS 13.4, *)) {
     for (UIPress* press in presses) {
-      [_textInputDelegate handlePressEvent:[[FlutterUIPressProxy alloc] initWithPress:press
-                                                                            withEvent:event]
-                                nextAction:^() {
-                                  [super pressesEnded:[NSSet setWithObject:press] withEvent:event];
-                                }];
+      [_textInputDelegate
+          handlePressEvent:[[[FlutterUIPressProxy alloc] initWithPress:press
+                                                             withEvent:event] autorelease]
+                nextAction:^() {
+                  [super pressesEnded:[NSSet setWithObject:press] withEvent:event];
+                }];
     }
   } else {
     [super pressesEnded:presses withEvent:event];
@@ -797,7 +844,8 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   if (@available(iOS 13.4, *)) {
     for (UIPress* press in presses) {
       [_textInputDelegate
-          handlePressEvent:[[FlutterUIPressProxy alloc] initWithPress:press withEvent:event]
+          handlePressEvent:[[[FlutterUIPressProxy alloc] initWithPress:press
+                                                             withEvent:event] autorelease]
                 nextAction:^() {
                   [super pressesCancelled:[NSSet setWithObject:press] withEvent:event];
                 }];
@@ -852,6 +900,30 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   return _textInputClient != 0;
 }
 
+#pragma mark - UIResponderStandardEditActions Overrides
+
+- (void)cut:(id)sender {
+  [UIPasteboard generalPasteboard].string = [self textInRange:_selectedTextRange];
+  [self replaceRange:_selectedTextRange withText:@""];
+}
+
+- (void)copy:(id)sender {
+  [UIPasteboard generalPasteboard].string = [self textInRange:_selectedTextRange];
+}
+
+- (void)paste:(id)sender {
+  [self insertText:[UIPasteboard generalPasteboard].string];
+}
+
+- (void)delete:(id)sender {
+  [self replaceRange:_selectedTextRange withText:@""];
+}
+
+- (void)selectAll:(id)sender {
+  [self setSelectedTextRange:[self textRangeFromPosition:[self beginningOfDocument]
+                                              toPosition:[self endOfDocument]]];
+}
+
 #pragma mark - UITextInput Overrides
 
 - (id<UITextInputTokenizer>)tokenizer {
@@ -882,7 +954,12 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
 
 - (void)setSelectedTextRange:(UITextRange*)selectedTextRange {
   [self setSelectedTextRangeLocal:selectedTextRange];
-  [self updateEditingState];
+
+  if (_enableDeltaModel) {
+    [self updateEditingStateWithDelta:[FlutterTextEditingDelta deltaWithNonText:self.text]];
+  } else {
+    [self updateEditingState];
+  }
 }
 
 - (id)insertDictationResultPlaceholder {
@@ -931,9 +1008,18 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
 }
 
 - (void)replaceRange:(UITextRange*)range withText:(NSString*)text {
+  NSString* textBeforeChange = [[self.text copy] autorelease];
   NSRange replaceRange = ((FlutterTextRange*)range).range;
   [self replaceRangeLocal:replaceRange withText:text];
-  [self updateEditingState];
+  if (_enableDeltaModel) {
+    [self updateEditingStateWithDelta:[FlutterTextEditingDelta
+                                          textEditingDelta:textBeforeChange
+                                             replacedRange:[self clampSelection:replaceRange
+                                                                        forText:textBeforeChange]
+                                               updatedText:text]];
+  } else {
+    [self updateEditingState];
+  }
 }
 
 - (BOOL)shouldChangeTextInRange:(UITextRange*)range replacementText:(NSString*)text {
@@ -988,8 +1074,10 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
 }
 
 - (void)setMarkedText:(NSString*)markedText selectedRange:(NSRange)markedSelectedRange {
+  NSString* textBeforeChange = [[self.text copy] autorelease];
   NSRange selectedRange = _selectedTextRange.range;
   NSRange markedTextRange = ((FlutterTextRange*)self.markedTextRange).range;
+  NSRange actualReplacedRange;
 
   if (markedText == nil)
     markedText = @"";
@@ -997,9 +1085,11 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   if (markedTextRange.length > 0) {
     // Replace text in the marked range with the new text.
     [self replaceRangeLocal:markedTextRange withText:markedText];
+    actualReplacedRange = markedTextRange;
     markedTextRange.length = markedText.length;
   } else {
     // Replace text in the selected range with the new text.
+    actualReplacedRange = selectedRange;
     [self replaceRangeLocal:selectedRange withText:markedText];
     markedTextRange = NSMakeRange(selectedRange.location, markedText.length);
   }
@@ -1012,14 +1102,26 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   [self setSelectedTextRangeLocal:[FlutterTextRange
                                       rangeWithNSRange:[self clampSelection:selectedRange
                                                                     forText:self.text]]];
-  [self updateEditingState];
+  if (_enableDeltaModel) {
+    [self updateEditingStateWithDelta:[FlutterTextEditingDelta
+                                          textEditingDelta:textBeforeChange
+                                             replacedRange:[self clampSelection:actualReplacedRange
+                                                                        forText:textBeforeChange]
+                                               updatedText:markedText]];
+  } else {
+    [self updateEditingState];
+  }
 }
 
 - (void)unmarkText {
   if (!self.markedTextRange)
     return;
   self.markedTextRange = nil;
-  [self updateEditingState];
+  if (_enableDeltaModel) {
+    [self updateEditingStateWithDelta:[FlutterTextEditingDelta deltaWithNonText:self.text]];
+  } else {
+    [self updateEditingState];
+  }
 }
 
 - (UITextRange*)textRangeFromPosition:(UITextPosition*)fromPosition
@@ -1294,7 +1396,6 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   // It seems impossible to use a negative "width" or "height", as the "convertRect"
   // call always turns a CGRect's negative dimensions into non-negative values, e.g.,
   // (1, 2, -3, -4) would become (-2, -2, 3, 4).
-  NSAssert(!_isFloatingCursorActive, @"Another floating cursor is currently active.");
   _isFloatingCursorActive = true;
   [self.textInputDelegate updateFloatingCursor:FlutterFloatingCursorDragStateStart
                                     withClient:_textInputClient
@@ -1302,16 +1403,13 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
 }
 
 - (void)updateFloatingCursorAtPoint:(CGPoint)point {
-  NSAssert(_isFloatingCursorActive,
-           @"updateFloatingCursorAtPoint is called without an active floating cursor.");
+  _isFloatingCursorActive = true;
   [self.textInputDelegate updateFloatingCursor:FlutterFloatingCursorDragStateUpdate
                                     withClient:_textInputClient
                                   withPosition:@{@"X" : @(point.x), @"Y" : @(point.y)}];
 }
 
 - (void)endFloatingCursor {
-  NSAssert(_isFloatingCursorActive,
-           @"endFloatingCursor is called without an active floating cursor.");
   _isFloatingCursorActive = false;
   [self.textInputDelegate updateFloatingCursor:FlutterFloatingCursorDragStateEnd
                                     withClient:_textInputClient
@@ -1349,6 +1447,38 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   } else {
     [self.textInputDelegate updateEditingClient:_textInputClient withState:state];
   }
+}
+
+- (void)updateEditingStateWithDelta:(FlutterTextEditingDelta*)delta {
+  NSUInteger selectionBase = ((FlutterTextPosition*)_selectedTextRange.start).index;
+  NSUInteger selectionExtent = ((FlutterTextPosition*)_selectedTextRange.end).index;
+
+  // Empty compositing range is represented by the framework's TextRange.empty.
+  NSInteger composingBase = -1;
+  NSInteger composingExtent = -1;
+  if (self.markedTextRange != nil) {
+    composingBase = ((FlutterTextPosition*)self.markedTextRange.start).index;
+    composingExtent = ((FlutterTextPosition*)self.markedTextRange.end).index;
+  }
+
+  NSDictionary* deltaToFramework = @{
+    @"oldText" : delta.oldText,
+    @"deltaText" : delta.deltaText,
+    @"deltaStart" : @(delta.deltaStart),
+    @"deltaEnd" : @(delta.deltaEnd),
+    @"selectionBase" : @(selectionBase),
+    @"selectionExtent" : @(selectionExtent),
+    @"selectionAffinity" : @(_selectionAffinity),
+    @"selectionIsDirectional" : @(false),
+    @"composingBase" : @(composingBase),
+    @"composingExtent" : @(composingExtent),
+  };
+
+  NSDictionary* deltas = @{
+    @"deltas" : @[ deltaToFramework ],
+  };
+
+  [self.textInputDelegate updateEditingClient:_textInputClient withDelta:deltas];
 }
 
 - (BOOL)hasText {
@@ -1659,13 +1789,11 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
 }
 
 // Creates and shows an input field that is not password related and has no autofill
-// hints. This method returns a new FlutterTextInputView instance when called, since
+// info. This method returns a new FlutterTextInputView instance when called, since
 // UIKit uses the identity of `UITextInput` instances (or the identity of the input
 // views) to decide whether the IME's internal states should be reset. See:
 // https://github.com/flutter/flutter/issues/79031 .
 - (FlutterTextInputView*)createInputViewWith:(NSDictionary*)configuration {
-  // It's possible that the configuration of this non-autofillable input view has
-  // an autofill configuration without hints. If it does, remove it from the context.
   NSString* autofillId = autofillIdFromDictionary(configuration);
   if (autofillId) {
     [_autofillContext removeObjectForKey:autofillId];
@@ -1715,7 +1843,7 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
                                                : [self getOrCreateAutofillableView:field
                                                                 isPasswordAutofill:isPassword];
     } else {
-      // Mark for deletion;
+      // Mark for deletion.
       [_autofillContext removeObjectForKey:autofillId];
     }
   }
@@ -1746,12 +1874,11 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
 }
 
 // The UIView to add FlutterTextInputViews to.
-- (UIView*)keyWindow {
-  UIWindow* keyWindow = [UIApplication sharedApplication].keyWindow;
-  NSAssert(keyWindow != nullptr,
-           @"The application must have a key window since the keyboard client "
+- (UIView*)hostView {
+  NSAssert(self.viewController.view != nullptr,
+           @"The application must have a HostView since the keyboard client "
            @"must be part of the responder chain to function");
-  return keyWindow;
+  return self.viewController.view;
 }
 
 // The UIView to add FlutterTextInputViews to.
@@ -1824,7 +1951,7 @@ static FlutterAutofillType autofillTypeOf(NSDictionary* configuration) {
   if (![inputView isDescendantOfView:_inputHider]) {
     [_inputHider addSubview:inputView];
   }
-  UIView* parentView = self.keyWindow;
+  UIView* parentView = self.hostView;
   if (_inputHider.superview != parentView) {
     [parentView addSubview:_inputHider];
   }

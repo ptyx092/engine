@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:html' as html;
+import 'dart:js_util' as js_util;
 import 'dart:typed_data';
 
 import 'package:meta/meta.dart';
@@ -53,8 +54,10 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
   /// The current platform configuration.
   @override
   ui.PlatformConfiguration get configuration => _configuration;
-  ui.PlatformConfiguration _configuration =
-      ui.PlatformConfiguration(locales: parseBrowserLanguages());
+  ui.PlatformConfiguration _configuration = ui.PlatformConfiguration(
+    locales: parseBrowserLanguages(),
+    textScaleFactor: findBrowserTextScaleFactor(),
+  );
 
   /// Receives all events related to platform configuration changes.
   @override
@@ -416,12 +419,12 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
             });
             return;
           case 'HapticFeedback.vibrate':
-            final String? type = decoded.arguments;
+            final String? type = decoded.arguments as String?;
             domRenderer.vibrate(_getHapticFeedbackDuration(type));
             replyToPlatformMessage(callback, codec.encodeSuccessEnvelope(true));
             return;
           case 'SystemChrome.setApplicationSwitcherDescription':
-            final Map<String, dynamic> arguments = decoded.arguments;
+            final Map<String, dynamic> arguments = decoded.arguments as Map<String, dynamic>;
             // TODO(ferhat): Find more appropriate defaults? Or noop when values are null?
             final String label = arguments['label'] as String? ?? '';
             final int primaryColor = arguments['primaryColor'] as int? ?? 0xFF000000;
@@ -430,7 +433,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
             replyToPlatformMessage(callback, codec.encodeSuccessEnvelope(true));
             return;
           case 'SystemChrome.setPreferredOrientations':
-            final List<dynamic> arguments = decoded.arguments;
+            final List<dynamic> arguments = decoded.arguments as List<dynamic>;
             domRenderer.setPreferredOrientation(arguments).then((bool success) {
               replyToPlatformMessage(
                   callback, codec.encodeSuccessEnvelope(success));
@@ -461,10 +464,10 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
       case 'flutter/mousecursor':
         const MethodCodec codec = StandardMethodCodec();
         final MethodCall decoded = codec.decodeMethodCall(data);
-        final Map<dynamic, dynamic> arguments = decoded.arguments;
+        final Map<dynamic, dynamic> arguments = decoded.arguments as Map<dynamic, dynamic>;
         switch (decoded.method) {
           case 'activateSystemCursor':
-            MouseCursor.instance!.activateSystemCursor(arguments['kind']);
+            MouseCursor.instance!.activateSystemCursor(arguments.tryString('kind'));
         }
         return;
 
@@ -1001,7 +1004,7 @@ class EnginePlatformDispatcher extends ui.PlatformDispatcher {
 
 bool _handleWebTestEnd2EndMessage(MethodCodec codec, ByteData? data) {
   final MethodCall decoded = codec.decodeMethodCall(data);
-  final double ratio = double.parse(decoded.arguments);
+  final double ratio = double.parse(decoded.arguments as String);
   switch (decoded.method) {
     case 'setDevicePixelRatio':
       window.debugOverrideDevicePixelRatio(ratio);
@@ -1075,4 +1078,42 @@ void invoke3<A1, A2, A3>(void Function(A1 a1, A2 a2, A3 a3)? callback,
       callback(arg1, arg2, arg3);
     });
   }
+}
+
+const double _defaultRootFontSize = 16.0;
+
+/// Finds the text scale factor of the browser by looking at the computed style
+/// of the browser's <html> element.
+double findBrowserTextScaleFactor() {
+  final num fontSize = _parseFontSize(html.document.documentElement!) ?? _defaultRootFontSize;
+  return fontSize / _defaultRootFontSize;
+}
+
+/// Parses the font size of [element] and returns the value without a unit.
+num? _parseFontSize(html.Element element) {
+  num? fontSize;
+
+  if (js_util.hasProperty(element, 'computedStyleMap')) {
+    // Use the newer `computedStyleMap` API available on some browsers.
+    final dynamic computedStyleMap =
+        // ignore: implicit_dynamic_function
+        js_util.callMethod(element, 'computedStyleMap', <Object?>[]);
+    if (computedStyleMap is Object) {
+      final dynamic fontSizeObject =
+          // ignore: implicit_dynamic_function
+          js_util.callMethod(computedStyleMap, 'get', <Object?>['font-size']);
+      if (fontSizeObject is Object) {
+        // ignore: implicit_dynamic_function
+        fontSize = js_util.getProperty(fontSizeObject, 'value') as num;
+      }
+    }
+  }
+
+  if (fontSize == null) {
+    // Fallback to `getComputedStyle`.
+    final String fontSizeString = element.getComputedStyle().fontSize;
+    fontSize = parseFloat(fontSizeString);
+  }
+
+  return fontSize;
 }

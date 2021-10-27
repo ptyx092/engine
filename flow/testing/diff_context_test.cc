@@ -53,12 +53,24 @@ sk_sp<DisplayList> DiffContextTest::CreateDisplayList(const SkRect& bounds,
 std::shared_ptr<DisplayListLayer> DiffContextTest::CreateDisplayListLayer(
     sk_sp<DisplayList> display_list,
     const SkPoint& offset) {
-  return std::make_shared<DisplayListLayer>(offset, display_list, false, false);
+  return std::make_shared<DisplayListLayer>(
+      offset, SkiaGPUObject(display_list, unref_queue()), false, false);
 }
 
 std::shared_ptr<ContainerLayer> DiffContextTest::CreateContainerLayer(
     std::initializer_list<std::shared_ptr<Layer>> layers) {
   auto res = std::make_shared<ContainerLayer>();
+  for (const auto& l : layers) {
+    res->Add(l);
+  }
+  return res;
+}
+
+std::shared_ptr<OpacityLayer> DiffContextTest::CreateOpacityLater(
+    std::initializer_list<std::shared_ptr<Layer>> layers,
+    SkAlpha alpha,
+    const SkPoint& offset) {
+  auto res = std::make_shared<OpacityLayer>(alpha, offset);
   for (const auto& l : layers) {
     res->Add(l);
   }

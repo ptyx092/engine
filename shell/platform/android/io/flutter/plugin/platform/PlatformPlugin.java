@@ -290,13 +290,12 @@ public class PlatformPlugin {
               | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
               | View.SYSTEM_UI_FLAG_FULLSCREEN;
     } else if (systemUiMode == PlatformChannel.SystemUiMode.EDGE_TO_EDGE
-        && Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+        && Build.VERSION.SDK_INT >= 29) {
       // EDGE TO EDGE
-      // Available starting at 16
+      // Available starting at 29
       // SDK 29 and up will apply a translucent body scrim behind 2/3 button navigation bars
-      // to ensure contrast with buttons on the nav bar.
-      // SDK 28 and lower will support a transparent 2/3 button navigation bar.
-      // Overlays should be included and not removed.
+      // to ensure contrast with buttons on the nav and status bars, unless the contrast is not
+      // enforced in the overlay styling.
       enabledOverlays =
           View.SYSTEM_UI_FLAG_LAYOUT_STABLE
               | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -394,7 +393,7 @@ public class PlatformPlugin {
     // You can't override the enforced contrast for a transparent status bar until SDK 29.
     // This overrides the translucent scrim that may be placed behind the bar on SDK 29+ to ensure
     // contrast is appropriate when using full screen layout modes like Edge to Edge.
-    if (!systemChromeStyle.systemStatusBarContrastEnforced && Build.VERSION.SDK_INT >= 29) {
+    if (systemChromeStyle.systemStatusBarContrastEnforced != null && Build.VERSION.SDK_INT >= 29) {
       window.setStatusBarContrastEnforced(systemChromeStyle.systemStatusBarContrastEnforced);
     }
 
@@ -433,7 +432,8 @@ public class PlatformPlugin {
     // This overrides the translucent scrim that may be placed behind 2/3 button navigation bars on
     // SDK 29+ to ensure contrast is appropriate when using full screen layout modes like
     // Edge to Edge.
-    if (!systemChromeStyle.systemNavigationBarContrastEnforced && Build.VERSION.SDK_INT >= 29) {
+    if (systemChromeStyle.systemNavigationBarContrastEnforced != null
+        && Build.VERSION.SDK_INT >= 29) {
       window.setNavigationBarContrastEnforced(
           systemChromeStyle.systemNavigationBarContrastEnforced);
     }

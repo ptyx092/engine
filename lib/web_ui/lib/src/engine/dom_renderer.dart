@@ -11,12 +11,12 @@ import 'package:ui/ui.dart' as ui;
 import '../engine.dart' show buildMode, registerHotRestartListener;
 import 'browser_detection.dart';
 import 'canvaskit/initialization.dart';
+import 'configuration.dart';
 import 'host_node.dart';
 import 'keyboard_binding.dart';
 import 'platform_dispatcher.dart';
 import 'pointer_binding.dart';
 import 'semantics.dart';
-import 'text/measurement.dart';
 import 'text_editing/text_editing.dart';
 import 'util.dart';
 import 'window.dart';
@@ -28,11 +28,6 @@ class DomRenderer {
     }
 
     reset();
-
-    TextMeasurementService.initialize(
-      rulerCacheCapacity: 10,
-      root: _glassPaneShadow!.node,
-    );
 
     assert(() {
       _setupHotRestart();
@@ -115,12 +110,14 @@ class DomRenderer {
   /// See for more details:
   /// https://developer.mozilla.org/en-US/docs/Web/API/Document/hasFocus
   bool get windowHasFocus =>
-      js_util.callMethod(html.document, 'hasFocus', <dynamic>[]) ?? false;
+      // ignore: implicit_dynamic_function
+      js_util.callMethod(html.document, 'hasFocus', <dynamic>[]) as bool;
 
   void _setupHotRestart() {
     // This persists across hot restarts to clear stale DOM.
     _staleHotRestartState =
-        js_util.getProperty(html.window, _staleHotRestartStore);
+        // ignore: implicit_dynamic_function
+        js_util.getProperty(html.window, _staleHotRestartStore) as List<html.Element?>?;
     if (_staleHotRestartState == null) {
       _staleHotRestartState = <html.Element?>[];
       js_util.setProperty(
@@ -238,7 +235,11 @@ class DomRenderer {
 
   static void setElementTransform(html.Element element, String transformValue) {
     js_util.setProperty(
-        js_util.getProperty(element, 'style'), 'transform', transformValue);
+      // ignore: implicit_dynamic_function
+      js_util.getProperty(element, 'style') as Object,
+      'transform',
+      transformValue,
+    );
   }
 
   void setText(html.Element element, String text) {
@@ -294,7 +295,7 @@ class DomRenderer {
     setElementAttribute(
       bodyElement,
       'flt-renderer',
-      '${useCanvasKit ? 'canvaskit' : 'html'} (${flutterWebAutoDetect ? 'auto-selected' : 'requested explicitly'})',
+      '${useCanvasKit ? 'canvaskit' : 'html'} (${FlutterConfiguration.flutterWebAutoDetect ? 'auto-selected' : 'requested explicitly'})',
     );
     setElementAttribute(bodyElement, 'flt-build-mode', buildMode);
 
@@ -401,7 +402,7 @@ class DomRenderer {
 
     // When debugging semantics, make the scene semi-transparent so that the
     // semantics tree is visible.
-    if (debugShowSemanticsNodes) {
+    if (configuration.debugShowSemanticsNodes) {
       _sceneHostElement!.style.opacity = '0.3';
     }
 
@@ -456,6 +457,7 @@ class DomRenderer {
 
   // Creates a [HostNode] into a `root` [html.Element].
   HostNode _createHostNode(html.Element root) {
+    // ignore: implicit_dynamic_function
     if (js_util.getProperty(root, 'attachShadow') != null) {
       return ShadowDomHostNode(root);
     } else {
@@ -526,6 +528,7 @@ class DomRenderer {
       double startAngle,
       double endAngle,
       bool antiClockwise) {
+    // ignore: implicit_dynamic_function
     _ellipseFeatureDetected ??= js_util.getProperty(context, 'ellipse') != null;
     if (_ellipseFeatureDetected!) {
       context.ellipse(centerX, centerY, radiusX, radiusY, rotation, startAngle,
@@ -571,7 +574,7 @@ class DomRenderer {
           return Future<bool>.value(true);
         } else {
           final String? lockType =
-              _deviceOrientationToLockType(orientations.first);
+              _deviceOrientationToLockType(orientations.first as String?);
           if (lockType != null) {
             final Completer<bool> completer = Completer<bool>();
             try {
@@ -652,6 +655,7 @@ class DomRenderer {
   void vibrate(int durationMs) {
     final html.Navigator navigator = html.window.navigator;
     if (js_util.hasProperty(navigator, 'vibrate')) {
+      // ignore: implicit_dynamic_function
       js_util.callMethod(navigator, 'vibrate', <num>[durationMs]);
     }
   }
@@ -706,18 +710,22 @@ void applyGlobalCssRulesToSheet(
 
   // This undoes browser's default painting and layout attributes of range
   // input, which is used in semantics.
-  sheet.insertRule('''
-flt-semantics input[type=range] {
-appearance: none;
--webkit-appearance: none;
-width: 100%;
-position: absolute;
-border: none;
-top: 0;
-right: 0;
-bottom: 0;
-left: 0;
-}''', sheet.cssRules.length);
+  sheet.insertRule(
+    '''
+    flt-semantics input[type=range] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 100%;
+      position: absolute;
+      border: none;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+    }
+    ''',
+    sheet.cssRules.length,
+  );
 
   if (isWebKit) {
     sheet.insertRule(
@@ -754,35 +762,45 @@ left: 0;
         sheet.cssRules.length);
   }
   sheet.insertRule('''
-flt-semantics input,
-flt-semantics textarea,
-flt-semantics [contentEditable="true"] {
-caret-color: transparent;
-}
-''', sheet.cssRules.length);
+    flt-semantics input,
+    flt-semantics textarea,
+    flt-semantics [contentEditable="true"] {
+    caret-color: transparent;
+  }
+  ''', sheet.cssRules.length);
 
   // By default on iOS, Safari would highlight the element that's being tapped
   // on using gray background. This CSS rule disables that.
   if (isWebKit) {
     sheet.insertRule('''
-$glassPaneTagName * {
--webkit-tap-highlight-color: transparent;
-}
-''', sheet.cssRules.length);
+      $glassPaneTagName * {
+      -webkit-tap-highlight-color: transparent;
+    }
+    ''', sheet.cssRules.length);
   }
+
+  // Hide placeholder text
+  sheet.insertRule(
+    '''
+    .flt-text-editing::placeholder {
+      opacity: 0;
+    }
+    ''',
+    sheet.cssRules.length,
+  );
 
   // This css prevents an autofill overlay brought by the browser during
   // text field autofill by delaying the transition effect.
   // See: https://github.com/flutter/flutter/issues/61132.
   if (browserHasAutofillOverlay()) {
     sheet.insertRule('''
-.transparentTextEditing:-webkit-autofill,
-.transparentTextEditing:-webkit-autofill:hover,
-.transparentTextEditing:-webkit-autofill:focus,
-.transparentTextEditing:-webkit-autofill:active {
-  -webkit-transition-delay: 99999s;
-}
-''', sheet.cssRules.length);
+      .transparentTextEditing:-webkit-autofill,
+      .transparentTextEditing:-webkit-autofill:hover,
+      .transparentTextEditing:-webkit-autofill:focus,
+      .transparentTextEditing:-webkit-autofill:active {
+        -webkit-transition-delay: 99999s;
+      }
+    ''', sheet.cssRules.length);
   }
 }
 

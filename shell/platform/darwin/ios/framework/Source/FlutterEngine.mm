@@ -312,6 +312,7 @@ static constexpr int kNumProfilerSamplesPerSec = 5;
       viewController ? [viewController getWeakPtr] : fml::WeakPtr<FlutterViewController>();
   self.iosPlatformView->SetOwnerViewController(_viewController);
   [self maybeSetupPlatformViewChannels];
+  _textInputPlugin.get().viewController = viewController;
 
   if (viewController) {
     __block FlutterEngine* blockSelf = self;
@@ -345,6 +346,7 @@ static constexpr int kNumProfilerSamplesPerSec = 5;
 
 - (void)notifyViewControllerDeallocated {
   [[self lifecycleChannel] sendMessage:@"AppLifecycleState.detached"];
+  _textInputPlugin.get().viewController = nil;
   if (!_allowHeadlessExecution) {
     [self destroyContext];
   } else {
@@ -735,6 +737,11 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
                               arguments:@[ @(client), @{tag : state} ]];
 }
 
+- (void)updateEditingClient:(int)client withDelta:(NSDictionary*)delta {
+  [_textInputChannel.get() invokeMethod:@"TextInputClient.updateEditingStateWithDeltas"
+                              arguments:@[ @(client), delta ]];
+}
+
 - (void)updateFloatingCursor:(FlutterFloatingCursorDragState)state
                   withClient:(int)client
                 withPosition:(NSDictionary*)position {
@@ -874,7 +881,7 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
   }
 }
 
-- (void)cleanupConnection:(FlutterBinaryMessengerConnection)connection {
+- (void)cleanUpConnection:(FlutterBinaryMessengerConnection)connection {
   if (_shell && _shell->IsSetup()) {
     std::string channel = _connections->CleanupConnection(connection);
     if (!channel.empty()) {
@@ -956,27 +963,8 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
 #pragma mark - Locale updates
 
 - (void)onLocaleUpdated:(NSNotification*)notification {
-  // [NSLocale currentLocale] provides an iOS resolved locale if the
-  // supported locales are exposed to the iOS embedder. Here, we get
-  // currentLocale and pass it to dart:ui
+  // Get and pass the user's preferred locale list to dart:ui.
   NSMutableArray<NSString*>* localeData = [[[NSMutableArray alloc] init] autorelease];
-  NSLocale* platformResolvedLocale = [NSLocale currentLocale];
-  NSString* languageCode = [platformResolvedLocale objectForKey:NSLocaleLanguageCode];
-  NSString* countryCode = [platformResolvedLocale objectForKey:NSLocaleCountryCode];
-  NSString* scriptCode = [platformResolvedLocale objectForKey:NSLocaleScriptCode];
-  NSString* variantCode = [platformResolvedLocale objectForKey:NSLocaleVariantCode];
-  if (languageCode) {
-    [localeData addObject:languageCode];
-    [localeData addObject:(countryCode ? countryCode : @"")];
-    [localeData addObject:(scriptCode ? scriptCode : @"")];
-    [localeData addObject:(variantCode ? variantCode : @"")];
-  }
-  if (localeData.count != 0) {
-    [self.localizationChannel invokeMethod:@"setPlatformResolvedLocale" arguments:localeData];
-  }
-
-  // Get and pass the user's preferred locale list to dart:ui
-  localeData = [[[NSMutableArray alloc] init] autorelease];
   NSArray<NSString*>* preferredLocales = [NSLocale preferredLanguages];
   for (NSString* localeID in preferredLocales) {
     NSLocale* locale = [[[NSLocale alloc] initWithLocaleIdentifier:localeID] autorelease];
@@ -1012,7 +1000,8 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
 }
 
 - (FlutterEngine*)spawnWithEntrypoint:(/*nullable*/ NSString*)entrypoint
-                           libraryURI:(/*nullable*/ NSString*)libraryURI {
+                           libraryURI:(/*nullable*/ NSString*)libraryURI
+                         initialRoute:(/*nullable*/ NSString*)initialRoute {
   NSAssert(_shell, @"Spawning from an engine without a shell (possibly not run).");
   FlutterEngine* result = [[FlutterEngine alloc] initWithName:_labelPrefix
                                                       project:_dartProject.get()
@@ -1041,8 +1030,13 @@ static void SetEntryPoint(flutter::Settings* settings, NSString* entrypoint, NSS
   flutter::Shell::CreateCallback<flutter::Rasterizer> on_create_rasterizer =
       [](flutter::Shell& shell) { return std::make_unique<flutter::Rasterizer>(shell); };
 
-  std::unique_ptr<flutter::Shell> shell =
-      _shell->Spawn(std::move(configuration), on_create_platform_view, on_create_rasterizer);
+  std::string cppInitialRoute;
+  if (initialRoute) {
+    cppInitialRoute = [initialRoute UTF8String];
+  }
+
+  std::unique_ptr<flutter::Shell> shell = _shell->Spawn(
+      std::move(configuration), cppInitialRoute, on_create_platform_view, on_create_rasterizer);
 
   result->_threadHost = _threadHost;
   result->_profiler = _profiler;

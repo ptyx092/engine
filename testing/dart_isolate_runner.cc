@@ -59,7 +59,7 @@ void AutoIsolateShutdown::Shutdown() {
         latch.Signal();
       });
   latch.Wait();
-  return true;
+  return result;
 }
 
 std::unique_ptr<AutoIsolateShutdown> RunDartCodeInIsolateOnUITaskRunner(
@@ -130,6 +130,7 @@ std::unique_ptr<AutoIsolateShutdown> RunDartCodeInIsolateOnUITaskRunner(
           vm_data->GetIsolateSnapshot(),       // isolate snapshot
           nullptr,                             // platform configuration
           DartIsolate::Flags{},                // flags
+          nullptr,                             // root isolate create callback
           settings.isolate_create_callback,    // isolate create callback
           settings.isolate_shutdown_callback,  // isolate shutdown callback
           entrypoint,                          // entrypoint

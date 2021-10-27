@@ -7,6 +7,7 @@ import static org.mockito.Mockito.*;
 
 import android.content.Context;
 import android.content.res.AssetManager;
+import android.graphics.SurfaceTexture;
 import android.util.SparseArray;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -14,9 +15,11 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewParent;
+import android.widget.FrameLayout.LayoutParams;
 import io.flutter.embedding.android.FlutterImageView;
 import io.flutter.embedding.android.FlutterView;
 import io.flutter.embedding.android.MotionEventTracker;
+import io.flutter.embedding.android.RenderMode;
 import io.flutter.embedding.engine.FlutterEngine;
 import io.flutter.embedding.engine.FlutterJNI;
 import io.flutter.embedding.engine.FlutterOverlaySurface;
@@ -32,6 +35,7 @@ import io.flutter.embedding.engine.systemchannels.TextInputChannel;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.StandardMethodCodec;
 import io.flutter.plugin.localization.LocalizationPlugin;
+import io.flutter.view.TextureRegistry;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -232,7 +236,7 @@ public class PlatformViewsControllerTest {
     attach(jni, platformViewsController);
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
 
     platformViewsController.initializePlatformViewIfNeeded(platformViewId);
 
@@ -259,7 +263,7 @@ public class PlatformViewsControllerTest {
     attach(jni, platformViewsController);
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
     verify(viewFactory, times(1)).create(any(), eq(platformViewId), any());
   }
 
@@ -281,7 +285,7 @@ public class PlatformViewsControllerTest {
     attach(jni, platformViewsController);
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
     assertEquals(ShadowFlutterJNI.getResponses().size(), 1);
 
     assertThrows(
@@ -289,6 +293,66 @@ public class PlatformViewsControllerTest {
         () -> {
           platformViewsController.initializePlatformViewIfNeeded(platformViewId);
         });
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class})
+  public void onDetachedFromJNI_clearsPlatformViewContext() {
+    PlatformViewsController platformViewsController = new PlatformViewsController();
+
+    int platformViewId = 0;
+    assertNull(platformViewsController.getPlatformViewById(platformViewId));
+
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView platformView = mock(PlatformView.class);
+
+    View pv = mock(View.class);
+    when(pv.getLayoutParams()).thenReturn(new LayoutParams(1, 1));
+
+    when(platformView.getView()).thenReturn(pv);
+    when(viewFactory.create(any(), eq(platformViewId), any())).thenReturn(platformView);
+    platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    attach(jni, platformViewsController);
+
+    // Simulate create call from the framework.
+    createPlatformView(
+        jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ false);
+
+    assertFalse(platformViewsController.contextToPlatformView.isEmpty());
+    platformViewsController.onDetachedFromJNI();
+    assertTrue(platformViewsController.contextToPlatformView.isEmpty());
+  }
+
+  @Test
+  @Config(shadows = {ShadowFlutterJNI.class})
+  public void onPreEngineRestart_clearsPlatformViewContext() {
+    PlatformViewsController platformViewsController = new PlatformViewsController();
+
+    int platformViewId = 0;
+    assertNull(platformViewsController.getPlatformViewById(platformViewId));
+
+    PlatformViewFactory viewFactory = mock(PlatformViewFactory.class);
+    PlatformView platformView = mock(PlatformView.class);
+
+    View pv = mock(View.class);
+    when(pv.getLayoutParams()).thenReturn(new LayoutParams(1, 1));
+
+    when(platformView.getView()).thenReturn(pv);
+    when(viewFactory.create(any(), eq(platformViewId), any())).thenReturn(platformView);
+    platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
+
+    FlutterJNI jni = new FlutterJNI();
+    attach(jni, platformViewsController);
+
+    // Simulate create call from the framework.
+    createPlatformView(
+        jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ false);
+
+    assertFalse(platformViewsController.contextToPlatformView.isEmpty());
+    platformViewsController.onDetachedFromJNI();
+    assertTrue(platformViewsController.contextToPlatformView.isEmpty());
   }
 
   @Test
@@ -311,7 +375,7 @@ public class PlatformViewsControllerTest {
     attach(jni, platformViewsController);
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
     assertEquals(ShadowFlutterJNI.getResponses().size(), 1);
 
     assertThrows(
@@ -343,7 +407,7 @@ public class PlatformViewsControllerTest {
     attach(jni, platformViewsController);
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
     platformViewsController.initializePlatformViewIfNeeded(platformViewId);
 
     assertNotNull(androidView.getParent());
@@ -354,7 +418,7 @@ public class PlatformViewsControllerTest {
     assertNull(androidView.getParent());
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
     platformViewsController.initializePlatformViewIfNeeded(platformViewId);
 
     assertNotNull(androidView.getParent());
@@ -378,13 +442,13 @@ public class PlatformViewsControllerTest {
     platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
 
     final FlutterJNI jni = new FlutterJNI();
-    jni.attachToNative(false);
+    jni.attachToNative();
     attach(jni, platformViewsController);
 
     jni.onFirstFrame();
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
 
     // Produce a frame that displays a platform view and an overlay surface.
     platformViewsController.onBeginFrame();
@@ -441,13 +505,13 @@ public class PlatformViewsControllerTest {
     platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
 
     final FlutterJNI jni = new FlutterJNI();
-    jni.attachToNative(false);
+    jni.attachToNative();
     attach(jni, platformViewsController);
 
     jni.onFirstFrame();
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
 
     // Simulate first frame from the framework.
     jni.onFirstFrame();
@@ -477,14 +541,14 @@ public class PlatformViewsControllerTest {
     platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
 
     final FlutterJNI jni = new FlutterJNI();
-    jni.attachToNative(false);
+    jni.attachToNative();
 
     final FlutterView flutterView = attach(jni, platformViewsController);
 
     jni.onFirstFrame();
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
     platformViewsController.initializePlatformViewIfNeeded(platformViewId);
     assertEquals(flutterView.getChildCount(), 2);
 
@@ -514,13 +578,13 @@ public class PlatformViewsControllerTest {
     platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
 
     final FlutterJNI jni = new FlutterJNI();
-    jni.attachToNative(false);
+    jni.attachToNative();
     attach(jni, platformViewsController);
 
     jni.onFirstFrame();
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
 
     // Produce a frame that displays a platform view and an overlay surface.
     platformViewsController.onBeginFrame();
@@ -569,7 +633,7 @@ public class PlatformViewsControllerTest {
     platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
 
     final FlutterJNI jni = new FlutterJNI();
-    jni.attachToNative(false);
+    jni.attachToNative();
     attach(jni, platformViewsController);
 
     final FlutterImageView overlayImageView = mock(FlutterImageView.class);
@@ -607,7 +671,7 @@ public class PlatformViewsControllerTest {
     platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
 
     final FlutterJNI jni = new FlutterJNI();
-    jni.attachToNative(false);
+    jni.attachToNative();
     attach(jni, platformViewsController);
 
     final FlutterImageView overlayImageView = mock(FlutterImageView.class);
@@ -647,13 +711,13 @@ public class PlatformViewsControllerTest {
     platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
 
     final FlutterJNI jni = new FlutterJNI();
-    jni.attachToNative(false);
+    jni.attachToNative();
     final FlutterView flutterView = attach(jni, platformViewsController);
 
     jni.onFirstFrame();
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
 
     // Produce a frame that displays a platform view and an overlay surface.
     platformViewsController.onBeginFrame();
@@ -693,7 +757,7 @@ public class PlatformViewsControllerTest {
     platformViewsController.getRegistry().registerViewFactory("testType", viewFactory);
 
     final FlutterJNI jni = new FlutterJNI();
-    jni.attachToNative(false);
+    jni.attachToNative();
     final FlutterView flutterView = attach(jni, platformViewsController);
 
     jni.onFirstFrame();
@@ -702,7 +766,7 @@ public class PlatformViewsControllerTest {
     synchronizeToNativeViewHierarchy(jni, platformViewsController, false);
 
     // Simulate create call from the framework.
-    createPlatformView(jni, platformViewsController, platformViewId, "testType");
+    createPlatformView(jni, platformViewsController, platformViewId, "testType", /* hybrid=*/ true);
 
     // Produce a frame that displays a platform view and an overlay surface.
     platformViewsController.onBeginFrame();
@@ -734,12 +798,16 @@ public class PlatformViewsControllerTest {
       FlutterJNI jni,
       PlatformViewsController platformViewsController,
       int platformViewId,
-      String viewType) {
+      String viewType,
+      boolean hybrid) {
     final Map<String, Object> platformViewCreateArguments = new HashMap<>();
-    platformViewCreateArguments.put("hybrid", true);
+    platformViewCreateArguments.put("hybrid", hybrid);
     platformViewCreateArguments.put("id", platformViewId);
     platformViewCreateArguments.put("viewType", viewType);
     platformViewCreateArguments.put("direction", 0);
+    platformViewCreateArguments.put("width", 1.0);
+    platformViewCreateArguments.put("height", 1.0);
+
     final MethodCall platformCreateMethodCall =
         new MethodCall("create", platformViewCreateArguments);
 
@@ -776,10 +844,38 @@ public class PlatformViewsControllerTest {
     executor.onAttachedToJNI();
 
     final Context context = RuntimeEnvironment.application.getApplicationContext();
-    platformViewsController.attach(context, null, executor);
+    final TextureRegistry registry =
+        new TextureRegistry() {
+          public void TextureRegistry() {}
+
+          @Override
+          public SurfaceTextureEntry createSurfaceTexture() {
+            return registerSurfaceTexture(mock(SurfaceTexture.class));
+          }
+
+          @Override
+          public SurfaceTextureEntry registerSurfaceTexture(SurfaceTexture surfaceTexture) {
+            return new SurfaceTextureEntry() {
+              @Override
+              public SurfaceTexture surfaceTexture() {
+                return mock(SurfaceTexture.class);
+              }
+
+              @Override
+              public long id() {
+                return 0;
+              }
+
+              @Override
+              public void release() {}
+            };
+          }
+        };
+
+    platformViewsController.attach(context, registry, executor);
 
     final FlutterView view =
-        new FlutterView(context, FlutterView.RenderMode.surface) {
+        new FlutterView(context, RenderMode.surface) {
           @Override
           public FlutterImageView createImageView() {
             final FlutterImageView view = mock(FlutterImageView.class);
@@ -817,7 +913,7 @@ public class PlatformViewsControllerTest {
     }
 
     @Implementation
-    public long performNativeAttach(FlutterJNI flutterJNI, boolean isBackgroundView) {
+    public long performNativeAttach(FlutterJNI flutterJNI) {
       return 1;
     }
 

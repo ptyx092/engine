@@ -17,8 +17,14 @@ import("//flutter/vulkan/config.gni")
 shell_gpu_configuration("fuchsia_gpu_configuration") {
   enable_software = false
   enable_gl = false
+
+  # TODO(dworsham): Enable once Fuchsia supports Vulkan through the embedder.
   enable_vulkan = false
   enable_metal = false
+}
+
+config("runner_base_config") {
+  defines = [ "FML_USED_ON_EMBEDDER" ]
 }
 
 config("runner_debug_config") {
@@ -36,7 +42,7 @@ config("runner_product_config") {
 template("runner_sources") {
   assert(defined(invoker.product), "runner_sources must define product")
 
-  runner_configs = []
+  runner_configs = [ ":runner_base_config" ]
   if (is_debug) {
     runner_configs += [ ":runner_debug_config" ]
   }
@@ -51,18 +57,30 @@ template("runner_sources") {
     sources = [
       "accessibility_bridge.cc",
       "accessibility_bridge.h",
-      "component.cc",
-      "component.h",
+      "component_v1.cc",
+      "component_v1.h",
+      "component_v2.cc",
+      "component_v2.h",
       "engine.cc",
       "engine.h",
+      "file_in_namespace_buffer.cc",
+      "file_in_namespace_buffer.h",
+      "flatland_connection.cc",
+      "flatland_connection.h",
+      "flatland_external_view_embedder.cc",
+      "flatland_external_view_embedder.h",
+      "flatland_platform_view.cc",
+      "flatland_platform_view.h",
       "flutter_runner_product_configuration.cc",
       "flutter_runner_product_configuration.h",
       "focus_delegate.cc",
       "focus_delegate.h",
-      "fuchsia_external_view_embedder.cc",
-      "fuchsia_external_view_embedder.h",
       "fuchsia_intl.cc",
       "fuchsia_intl.h",
+      "gfx_external_view_embedder.cc",
+      "gfx_external_view_embedder.h",
+      "gfx_platform_view.cc",
+      "gfx_platform_view.h",
       "gfx_session_connection.cc",
       "gfx_session_connection.h",
       "isolate_configurator.cc",
@@ -72,10 +90,13 @@ template("runner_sources") {
       "logging.h",
       "platform_view.cc",
       "platform_view.h",
+      "pointer_delegate.cc",
+      "pointer_delegate.h",
       "runner.cc",
       "runner.h",
       "surface.cc",
       "surface.h",
+      "surface_producer.h",
       "task_runner_adapter.cc",
       "task_runner_adapter.h",
       "unique_fdio_ns.h",
@@ -119,12 +140,17 @@ template("runner_sources") {
 
     deps = [
              "$fuchsia_sdk_root/fidl:fuchsia.accessibility.semantics",
+             "$fuchsia_sdk_root/fidl:fuchsia.component.runner",
              "$fuchsia_sdk_root/fidl:fuchsia.fonts",
              "$fuchsia_sdk_root/fidl:fuchsia.images",
              "$fuchsia_sdk_root/fidl:fuchsia.intl",
              "$fuchsia_sdk_root/fidl:fuchsia.io",
+             "$fuchsia_sdk_root/fidl:fuchsia.memorypressure",
              "$fuchsia_sdk_root/fidl:fuchsia.sys",
              "$fuchsia_sdk_root/fidl:fuchsia.ui.app",
+             "$fuchsia_sdk_root/fidl:fuchsia.ui.composition",
+             "$fuchsia_sdk_root/fidl:fuchsia.ui.pointer",
+             "$fuchsia_sdk_root/fidl:fuchsia.ui.views",
              "$fuchsia_sdk_root/fidl:fuchsia.ui.scenic",
              "$fuchsia_sdk_root/pkg:async-cpp",
              "$fuchsia_sdk_root/pkg:async-default",
@@ -294,6 +320,7 @@ template("jit_runner") {
     binary = "flutter_jit${product_suffix}_runner"
 
     cmx_file = rebase_path("meta/flutter_jit${product_suffix}_runner.cmx")
+    cml_file = rebase_path("meta/flutter_jit${product_suffix}_runner.cml")
 
     resources = [
       {
@@ -373,6 +400,7 @@ template("aot_runner") {
     }
 
     cmx_file = rebase_path("meta/flutter_aot${product_suffix}_runner.cmx")
+    cml_file = rebase_path("meta/flutter_aot${product_suffix}_runner.cml")
 
     binary = "flutter_aot${product_suffix}_runner"
 
@@ -440,16 +468,24 @@ executable("flutter_runner_unittests") {
 
   sources = [
     "accessibility_bridge_unittest.cc",
-    "component_unittest.cc",
+    "component_v1_unittest.cc",
     "flutter_runner_fakes.h",
     "focus_delegate_unittests.cc",
     "fuchsia_intl_unittest.cc",
     "keyboard_unittest.cc",
     "platform_view_unittest.cc",
+    "pointer_delegate_unittests.cc",
     "runner_unittest.cc",
     "tests/engine_unittests.cc",
+    "tests/fake_flatland_unittests.cc",
+    "tests/fake_session_unittests.cc",
+    "tests/flatland_connection_unittests.cc",
     "tests/flutter_runner_product_configuration_unittests.cc",
+    "tests/gfx_external_view_embedder_unittests.cc",
     "tests/gfx_session_connection_unittests.cc",
+    "tests/pointer_event_utility.cc",
+    "tests/pointer_event_utility.h",
+    "vsync_waiter_unittest.cc",
   ]
 
   # This is needed for //third_party/googletest for linking zircon symbols.
@@ -471,7 +507,6 @@ executable("flutter_runner_unittests") {
            "tests/fakes",
            ":flutter_runner_fixtures",
            ":flutter_runner_sources",
-           "tests/fakes",
            "//build/fuchsia/pkg:async-testing",
            "//build/fuchsia/pkg:sys_cpp_testing",
            "//flutter/testing",
@@ -795,5 +830,6 @@ group("tests") {
     ":testing_tests",
     ":txt_tests",
     ":ui_tests",
+    "integration_flutter_tests",
   ]
 }

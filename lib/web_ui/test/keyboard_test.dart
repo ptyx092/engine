@@ -48,7 +48,7 @@ void testMain() {
       ui.window.onPlatformMessage = (String channel, ByteData? data,
           ui.PlatformMessageResponseCallback? callback) {
         channelReceived = channel;
-        dataReceived = const JSONMessageCodec().decodeMessage(data);
+        dataReceived = const JSONMessageCodec().decodeMessage(data) as Map<String, dynamic>?;
       };
 
       html.KeyboardEvent event;
@@ -79,7 +79,7 @@ void testMain() {
       ui.window.onPlatformMessage = (String channel, ByteData? data,
           ui.PlatformMessageResponseCallback? callback) {
         channelReceived = channel;
-        dataReceived = const JSONMessageCodec().decodeMessage(data);
+        dataReceived = const JSONMessageCodec().decodeMessage(data) as Map<String, dynamic>?;
       };
 
       html.KeyboardEvent event;
@@ -109,7 +109,7 @@ void testMain() {
       Map<String, dynamic>? dataReceived;
       ui.window.onPlatformMessage = (String channel, ByteData? data,
           ui.PlatformMessageResponseCallback? callback) {
-        dataReceived = const JSONMessageCodec().decodeMessage(data);
+        dataReceived = const JSONMessageCodec().decodeMessage(data) as Map<String, dynamic>?;
       };
 
       html.KeyboardEvent event;
@@ -161,7 +161,7 @@ void testMain() {
       final List<Map<String, dynamic>> messages = <Map<String, dynamic>>[];
       ui.window.onPlatformMessage = (String channel, ByteData? data,
           ui.PlatformMessageResponseCallback? callback) {
-        messages.add(const JSONMessageCodec().decodeMessage(data));
+        messages.add(const JSONMessageCodec().decodeMessage(data) as Map<String, dynamic>);
       };
 
       html.KeyboardEvent event;
@@ -344,7 +344,7 @@ void testMain() {
         final List<Map<String, dynamic>> messages = <Map<String, dynamic>>[];
         ui.window.onPlatformMessage = (String channel, ByteData? data,
             ui.PlatformMessageResponseCallback? callback) {
-          messages.add(const JSONMessageCodec().decodeMessage(data));
+          messages.add(const JSONMessageCodec().decodeMessage(data) as Map<String, dynamic>);
         };
 
         dispatchKeyboardEvent(
@@ -461,7 +461,7 @@ void testMain() {
         final List<Map<String, dynamic>> messages = <Map<String, dynamic>>[];
         ui.window.onPlatformMessage = (String channel, ByteData? data,
             ui.PlatformMessageResponseCallback? callback) {
-          messages.add(const JSONMessageCodec().decodeMessage(data));
+          messages.add(const JSONMessageCodec().decodeMessage(data) as Map<String, dynamic>);
         };
 
         dispatchKeyboardEvent(
@@ -542,7 +542,7 @@ void testMain() {
         final List<Map<String, dynamic>> messages = <Map<String, dynamic>>[];
         ui.window.onPlatformMessage = (String channel, ByteData? data,
             ui.PlatformMessageResponseCallback? callback) {
-          messages.add(const JSONMessageCodec().decodeMessage(data));
+          messages.add(const JSONMessageCodec().decodeMessage(data) as Map<String, dynamic>);
         };
 
         dispatchKeyboardEvent(
@@ -572,7 +572,7 @@ void testMain() {
       final List<Map<String, dynamic>> messages = <Map<String, dynamic>>[];
       ui.window.onPlatformMessage = (String channel, ByteData? data,
           ui.PlatformMessageResponseCallback? callback) {
-        messages.add(const JSONMessageCodec().decodeMessage(data));
+        messages.add(const JSONMessageCodec().decodeMessage(data) as Map<String, dynamic>);
       };
 
       dispatchKeyboardEvent(
@@ -658,7 +658,8 @@ html.KeyboardEvent dispatchKeyboardEvent(
   target ??= html.window;
 
   final Function jsKeyboardEvent =
-      js_util.getProperty(html.window, 'KeyboardEvent');
+      // ignore: implicit_dynamic_function
+      js_util.getProperty(html.window, 'KeyboardEvent') as Function;
   final List<dynamic> eventArgs = <dynamic>[
     type,
     <String, dynamic>{
@@ -674,8 +675,11 @@ html.KeyboardEvent dispatchKeyboardEvent(
       'cancelable': true,
     }
   ];
-  final html.KeyboardEvent event =
-      js_util.callConstructor(jsKeyboardEvent, js_util.jsify(eventArgs));
+  // ignore: implicit_dynamic_function
+  final html.KeyboardEvent event = js_util.callConstructor(
+    jsKeyboardEvent,
+    js_util.jsify(eventArgs) as List<Object?>,
+  ) as html.KeyboardEvent;
   target.dispatchEvent(event);
 
   return event;

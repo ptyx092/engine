@@ -9,8 +9,13 @@
 
 #import "flutter/shell/platform/darwin/common/framework/Headers/FlutterMacros.h"
 #import "flutter/shell/platform/darwin/ios/framework/Headers/FlutterEngine.h"
+#import "flutter/shell/platform/darwin/ios/framework/Headers/FlutterViewController.h"
 
 FLUTTER_ASSERT_ARC
+
+@interface FlutterEngine ()
+- (nonnull FlutterTextInputPlugin*)textInputPlugin;
+@end
 
 @interface FlutterTextInputView ()
 @property(nonatomic, copy) NSString* autofillId;
@@ -58,6 +63,8 @@ FLUTTER_ASSERT_ARC
                    clearText:(BOOL)clearText
                 delayRemoval:(BOOL)delayRemoval;
 - (NSArray<UIView*>*)textInputViews;
+- (UIView*)hostView;
+- (void)addToInputParentViewIfNeeded:(FlutterTextInputView*)inputView;
 @end
 
 @interface FlutterTextInputPluginTest : XCTestCase
@@ -68,6 +75,7 @@ FLUTTER_ASSERT_ARC
   NSDictionary* _passwordTemplate;
   id engine;
   FlutterTextInputPlugin* textInputPlugin;
+  FlutterViewController* viewController;
 }
 
 - (void)setUp {
@@ -76,6 +84,8 @@ FLUTTER_ASSERT_ARC
   engine = OCMClassMock([FlutterEngine class]);
   textInputPlugin = [[FlutterTextInputPlugin alloc] init];
   textInputPlugin.textInputDelegate = engine;
+  viewController = [FlutterViewController new];
+  textInputPlugin.viewController = viewController;
 }
 
 - (void)tearDown {
@@ -87,6 +97,7 @@ FLUTTER_ASSERT_ARC
   [textInputPlugin cleanUpViewHierarchy:YES clearText:YES delayRemoval:NO];
   [[[[textInputPlugin textInputView] superview] subviews]
       makeObjectsPerformSelector:@selector(removeFromSuperview)];
+  viewController = nil;
   [super tearDown];
 }
 
@@ -247,6 +258,30 @@ FLUTTER_ASSERT_ARC
   XCTAssertEqual(substring.length, 0ul);
 }
 
+- (void)testStandardEditActions {
+  NSDictionary* config = self.mutableTemplateCopy;
+  [self setClientId:123 configuration:config];
+  NSArray<FlutterTextInputView*>* inputFields = self.installedInputViews;
+  FlutterTextInputView* inputView = inputFields[0];
+
+  [inputView insertText:@"aaaa"];
+  [inputView selectAll:nil];
+  [inputView cut:nil];
+  [inputView insertText:@"bbbb"];
+  [inputView paste:nil];
+  [inputView selectAll:nil];
+  [inputView copy:nil];
+  [inputView paste:nil];
+  [inputView selectAll:nil];
+  [inputView delete:nil];
+  [inputView paste:nil];
+  [inputView paste:nil];
+
+  UITextRange* range = [FlutterTextRange rangeWithNSRange:NSMakeRange(0, 30)];
+  NSString* substring = [inputView textInRange:range];
+  XCTAssertEqualObjects(substring, @"bbbbaaaabbbbaaaa");
+}
+
 - (void)testNoZombies {
   // Regression test for https://github.com/flutter/flutter/issues/62501.
   FlutterSecureTextInputView* passwordView = [[FlutterSecureTextInputView alloc] init];
@@ -304,6 +339,204 @@ FLUTTER_ASSERT_ARC
   }
 }
 
+#pragma mark - TextEditingDelta tests
+- (void)testTextEditingDeltasAreGeneratedOnTextInput {
+  FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
+  inputView.textInputDelegate = engine;
+  inputView.enableDeltaModel = YES;
+
+  __block int updateCount = 0;
+  OCMStub([engine updateEditingClient:0 withDelta:[OCMArg isNotNil]])
+      .andDo(^(NSInvocation* invocation) {
+        updateCount++;
+      });
+
+  [inputView insertText:@"text to insert"];
+  // Update the framework exactly once.
+  XCTAssertEqual(updateCount, 1);
+
+  // Verify correct delta is generated.
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"] isEqualToString:@""]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"]
+                             isEqualToString:@"text to insert"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == 0) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == 0);
+                }]]);
+
+  [inputView deleteBackward];
+  XCTAssertEqual(updateCount, 2);
+
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"]
+                             isEqualToString:@"text to insert"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"] isEqualToString:@""]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == 13) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == 14);
+                }]]);
+
+  inputView.selectedTextRange = [FlutterTextRange rangeWithNSRange:NSMakeRange(0, 1)];
+  XCTAssertEqual(updateCount, 3);
+
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"]
+                             isEqualToString:@"text to inser"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"] isEqualToString:@""]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == -1) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == -1);
+                }]]);
+
+  [inputView replaceRange:[FlutterTextRange rangeWithNSRange:NSMakeRange(0, 1)]
+                 withText:@"replace text"];
+  XCTAssertEqual(updateCount, 4);
+
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"]
+                             isEqualToString:@"text to inser"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"]
+                             isEqualToString:@"replace text"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == 0) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == 1);
+                }]]);
+
+  [inputView setMarkedText:@"marked text" selectedRange:NSMakeRange(0, 1)];
+  XCTAssertEqual(updateCount, 5);
+
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"]
+                             isEqualToString:@"replace textext to inser"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"]
+                             isEqualToString:@"marked text"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == 12) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == 12);
+                }]]);
+
+  [inputView unmarkText];
+  XCTAssertEqual(updateCount, 6);
+
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"]
+                             isEqualToString:@"replace textmarked textext to inser"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"] isEqualToString:@""]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == -1) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == -1);
+                }]]);
+}
+
+- (void)testTextEditingDeltasAreGeneratedOnSetMarkedTextReplacement {
+  FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
+  inputView.textInputDelegate = engine;
+  inputView.enableDeltaModel = YES;
+
+  __block int updateCount = 0;
+  OCMStub([engine updateEditingClient:0 withDelta:[OCMArg isNotNil]])
+      .andDo(^(NSInvocation* invocation) {
+        updateCount++;
+      });
+
+  [inputView.text setString:@"Some initial text"];
+  XCTAssertEqual(updateCount, 0);
+
+  UITextRange* range = [FlutterTextRange rangeWithNSRange:NSMakeRange(13, 4)];
+  inputView.markedTextRange = range;
+  inputView.selectedTextRange = nil;
+  XCTAssertEqual(updateCount, 1);
+
+  [inputView setMarkedText:@"new marked text." selectedRange:NSMakeRange(0, 1)];
+  XCTAssertEqual(updateCount, 2);
+
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"]
+                             isEqualToString:@"Some initial text"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"]
+                             isEqualToString:@"new marked text."]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == 13) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == 17);
+                }]]);
+}
+
+- (void)testTextEditingDeltasAreGeneratedOnSetMarkedTextInsertion {
+  FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
+  inputView.textInputDelegate = engine;
+  inputView.enableDeltaModel = YES;
+
+  __block int updateCount = 0;
+  OCMStub([engine updateEditingClient:0 withDelta:[OCMArg isNotNil]])
+      .andDo(^(NSInvocation* invocation) {
+        updateCount++;
+      });
+
+  [inputView.text setString:@"Some initial text"];
+  XCTAssertEqual(updateCount, 0);
+
+  UITextRange* range = [FlutterTextRange rangeWithNSRange:NSMakeRange(13, 4)];
+  inputView.markedTextRange = range;
+  inputView.selectedTextRange = nil;
+  XCTAssertEqual(updateCount, 1);
+
+  [inputView setMarkedText:@"text." selectedRange:NSMakeRange(0, 1)];
+  XCTAssertEqual(updateCount, 2);
+
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"]
+                             isEqualToString:@"Some initial text"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"]
+                             isEqualToString:@"text."]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == 13) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == 17);
+                }]]);
+}
+
+- (void)testTextEditingDeltasAreGeneratedOnSetMarkedTextDeletion {
+  FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
+  inputView.textInputDelegate = engine;
+  inputView.enableDeltaModel = YES;
+
+  __block int updateCount = 0;
+  OCMStub([engine updateEditingClient:0 withDelta:[OCMArg isNotNil]])
+      .andDo(^(NSInvocation* invocation) {
+        updateCount++;
+      });
+
+  [inputView.text setString:@"Some initial text"];
+  XCTAssertEqual(updateCount, 0);
+
+  UITextRange* range = [FlutterTextRange rangeWithNSRange:NSMakeRange(13, 4)];
+  inputView.markedTextRange = range;
+  inputView.selectedTextRange = nil;
+  XCTAssertEqual(updateCount, 1);
+
+  [inputView setMarkedText:@"tex" selectedRange:NSMakeRange(0, 1)];
+  XCTAssertEqual(updateCount, 2);
+
+  OCMVerify([engine
+      updateEditingClient:0
+                withDelta:[OCMArg checkWithBlock:^BOOL(NSDictionary* state) {
+                  return ([[state[@"deltas"] objectAtIndex:0][@"oldText"]
+                             isEqualToString:@"Some initial text"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaText"]
+                             isEqualToString:@"tex"]) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaStart"] intValue] == 13) &&
+                         ([[state[@"deltas"] objectAtIndex:0][@"deltaEnd"] intValue] == 17);
+                }]]);
+}
+
 #pragma mark - EditingState tests
 
 - (void)testUITextInputCallsUpdateEditingStateOnce {
@@ -337,12 +570,86 @@ FLUTTER_ASSERT_ARC
   XCTAssertEqual(updateCount, 6);
 }
 
+- (void)testUITextInputCallsUpdateEditingStateWithDeltaOnce {
+  FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
+  inputView.textInputDelegate = engine;
+  inputView.enableDeltaModel = YES;
+
+  __block int updateCount = 0;
+  OCMStub([engine updateEditingClient:0 withDelta:[OCMArg isNotNil]])
+      .andDo(^(NSInvocation* invocation) {
+        updateCount++;
+      });
+
+  [inputView insertText:@"text to insert"];
+  // Update the framework exactly once.
+  XCTAssertEqual(updateCount, 1);
+
+  [inputView deleteBackward];
+  XCTAssertEqual(updateCount, 2);
+
+  inputView.selectedTextRange = [FlutterTextRange rangeWithNSRange:NSMakeRange(0, 1)];
+  XCTAssertEqual(updateCount, 3);
+
+  [inputView replaceRange:[FlutterTextRange rangeWithNSRange:NSMakeRange(0, 1)]
+                 withText:@"replace text"];
+  XCTAssertEqual(updateCount, 4);
+
+  [inputView setMarkedText:@"marked text" selectedRange:NSMakeRange(0, 1)];
+  XCTAssertEqual(updateCount, 5);
+
+  [inputView unmarkText];
+  XCTAssertEqual(updateCount, 6);
+}
+
 - (void)testTextChangesDoNotTriggerUpdateEditingClient {
   FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
   inputView.textInputDelegate = engine;
 
   __block int updateCount = 0;
   OCMStub([engine updateEditingClient:0 withState:[OCMArg isNotNil]])
+      .andDo(^(NSInvocation* invocation) {
+        updateCount++;
+      });
+
+  [inputView.text setString:@"BEFORE"];
+  XCTAssertEqual(updateCount, 0);
+
+  inputView.markedTextRange = nil;
+  inputView.selectedTextRange = nil;
+  XCTAssertEqual(updateCount, 1);
+
+  // Text changes don't trigger an update.
+  XCTAssertEqual(updateCount, 1);
+  [inputView setTextInputState:@{@"text" : @"AFTER"}];
+  XCTAssertEqual(updateCount, 1);
+  [inputView setTextInputState:@{@"text" : @"AFTER"}];
+  XCTAssertEqual(updateCount, 1);
+
+  // Selection changes don't trigger an update.
+  [inputView
+      setTextInputState:@{@"text" : @"SELECTION", @"selectionBase" : @0, @"selectionExtent" : @3}];
+  XCTAssertEqual(updateCount, 1);
+  [inputView
+      setTextInputState:@{@"text" : @"SELECTION", @"selectionBase" : @1, @"selectionExtent" : @3}];
+  XCTAssertEqual(updateCount, 1);
+
+  // Composing region changes don't trigger an update.
+  [inputView
+      setTextInputState:@{@"text" : @"COMPOSING", @"composingBase" : @1, @"composingExtent" : @2}];
+  XCTAssertEqual(updateCount, 1);
+  [inputView
+      setTextInputState:@{@"text" : @"COMPOSING", @"composingBase" : @1, @"composingExtent" : @3}];
+  XCTAssertEqual(updateCount, 1);
+}
+
+- (void)testTextChangesDoNotTriggerUpdateEditingClientWithDelta {
+  FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
+  inputView.textInputDelegate = engine;
+  inputView.enableDeltaModel = YES;
+
+  __block int updateCount = 0;
+  OCMStub([engine updateEditingClient:0 withDelta:[OCMArg isNotNil]])
       .andDo(^(NSInvocation* invocation) {
         updateCount++;
       });
@@ -553,6 +860,16 @@ FLUTTER_ASSERT_ARC
   }
 }
 
+- (void)testFloatingCursorDoesNotThrow {
+  // The keyboard implementation may send unbalanced calls to the input view.
+  FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
+  [inputView beginFloatingCursorAtPoint:CGPointMake(123, 321)];
+  [inputView beginFloatingCursorAtPoint:CGPointMake(123, 321)];
+  [inputView endFloatingCursor];
+  [inputView beginFloatingCursorAtPoint:CGPointMake(123, 321)];
+  [inputView endFloatingCursor];
+}
+
 - (void)testBoundsForFloatingCursor {
   FlutterTextInputView* inputView = [[FlutterTextInputView alloc] init];
 
@@ -632,6 +949,28 @@ FLUTTER_ASSERT_ARC
 }
 
 #pragma mark - Autofill - Tests
+
+- (void)testDisablingAutofillOnInputClient {
+  NSDictionary* config = self.mutableTemplateCopy;
+  [config setValue:@"YES" forKey:@"obscureText"];
+
+  [self setClientId:123 configuration:config];
+
+  FlutterTextInputView* inputView = self.installedInputViews[0];
+  XCTAssertEqualObjects(inputView.textContentType, @"");
+}
+
+- (void)testAutofillEnabledByDefault {
+  NSDictionary* config = self.mutableTemplateCopy;
+  [config setValue:@"NO" forKey:@"obscureText"];
+  [config setValue:@{@"uniqueIdentifier" : @"field1", @"editingValue" : @{@"text" : @""}}
+            forKey:@"autofill"];
+
+  [self setClientId:123 configuration:config];
+
+  FlutterTextInputView* inputView = self.installedInputViews[0];
+  XCTAssertNil(inputView.textContentType);
+}
 
 - (void)testAutofillContext {
   NSMutableDictionary* field1 = self.mutableTemplateCopy;
@@ -1017,8 +1356,11 @@ FLUTTER_ASSERT_ARC
 }
 
 - (void)testFlutterTextInputPluginRetainsFlutterTextInputView {
+  FlutterViewController* flutterViewController = [FlutterViewController new];
   FlutterTextInputPlugin* myInputPlugin = [[FlutterTextInputPlugin alloc] init];
   myInputPlugin.textInputDelegate = engine;
+  myInputPlugin.viewController = flutterViewController;
+
   __weak UIView* activeView;
   @autoreleasepool {
     FlutterMethodCall* setClientCall = [FlutterMethodCall
@@ -1039,6 +1381,21 @@ FLUTTER_ASSERT_ARC
   }
   // This assert proves the myInputPlugin.textInputView is not deallocated.
   XCTAssertNotNil(activeView);
+}
+
+- (void)testFlutterTextInputPluginHostViewNilCrash {
+  FlutterTextInputPlugin* myInputPlugin = [[FlutterTextInputPlugin alloc] init];
+  myInputPlugin.viewController = nil;
+  XCTAssertThrows([myInputPlugin hostView], @"Throws exception if host view is nil");
+}
+
+- (void)testFlutterTextInputPluginHostViewNotNil {
+  FlutterViewController* flutterViewController = [FlutterViewController new];
+  FlutterEngine* flutterEngine = [[FlutterEngine alloc] init];
+  [flutterEngine runWithEntrypoint:nil];
+  flutterEngine.viewController = flutterViewController;
+  XCTAssertNotNil(flutterEngine.textInputPlugin.viewController);
+  XCTAssertNotNil([flutterEngine.textInputPlugin hostView]);
 }
 
 @end

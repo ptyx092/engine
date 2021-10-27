@@ -86,7 +86,7 @@ public class FlutterView extends FrameLayout implements MouseCursorPlugin.MouseC
   @Nullable private FlutterSurfaceView flutterSurfaceView;
   @Nullable private FlutterTextureView flutterTextureView;
   @Nullable private FlutterImageView flutterImageView;
-  @Nullable private RenderSurface renderSurface;
+  @Nullable @VisibleForTesting /* package */ RenderSurface renderSurface;
   @Nullable private RenderSurface previousRenderSurface;
   private final Set<FlutterUiDisplayListener> flutterUiDisplayListeners = new HashSet<>();
   private boolean isFlutterUiDisplayed;
@@ -845,7 +845,7 @@ public class FlutterView extends FrameLayout implements MouseCursorPlugin.MouseC
    * @param accessibilityId The view accessibility id.
    * @return The view matching the accessibility id if any.
    */
-  @SuppressLint("PrivateApi")
+  @SuppressLint("SoonBlockedPrivateApi")
   public View findViewByAccessibilityIdTraversal(int accessibilityId) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
       return findViewByAccessibilityIdRootedAtCurrentView(accessibilityId, this);
@@ -1083,6 +1083,11 @@ public class FlutterView extends FrameLayout implements MouseCursorPlugin.MouseC
     flutterRenderer.removeIsDisplayingFlutterUiListener(flutterUiDisplayListener);
     flutterRenderer.stopRenderingToSurface();
     flutterRenderer.setSemanticsEnabled(false);
+
+    // Revert the image view to previous surface
+    if (previousRenderSurface != null && renderSurface == flutterImageView) {
+      renderSurface = previousRenderSurface;
+    }
     renderSurface.detachFromRenderer();
 
     flutterImageView = null;
@@ -1276,81 +1281,6 @@ public class FlutterView extends FrameLayout implements MouseCursorPlugin.MouseC
   @Override
   public void autofill(SparseArray<AutofillValue> values) {
     textInputPlugin.autofill(values);
-  }
-
-  /**
-   * Render modes for a {@link FlutterView}.
-   *
-   * <p>Deprecated - please use {@link io.flutter.embedding.android.RenderMode} instead.
-   */
-  @Deprecated()
-  public enum RenderMode {
-    /**
-     * {@code RenderMode}, which paints a Flutter UI to a {@link android.view.SurfaceView}. This
-     * mode has the best performance, but a {@code FlutterView} in this mode cannot be positioned
-     * between 2 other Android {@code View}s in the z-index, nor can it be animated/transformed.
-     * Unless the special capabilities of a {@link android.graphics.SurfaceTexture} are required,
-     * developers should strongly prefer this render mode.
-     */
-    surface,
-    /**
-     * {@code RenderMode}, which paints a Flutter UI to a {@link android.graphics.SurfaceTexture}.
-     * This mode is not as performant as {@link RenderMode#surface}, but a {@code FlutterView} in
-     * this mode can be animated and transformed, as well as positioned in the z-index between 2+
-     * other Android {@code Views}. Unless the special capabilities of a {@link
-     * android.graphics.SurfaceTexture} are required, developers should strongly prefer the {@link
-     * RenderMode#surface} render mode.
-     */
-    texture,
-    /**
-     * {@code RenderMode}, which paints Paints a Flutter UI provided by an {@link
-     * android.media.ImageReader} onto a {@link android.graphics.Canvas}. This mode is not as
-     * performant as {@link RenderMode#surface}, but a {@code FlutterView} in this mode can handle
-     * full interactivity with a {@link io.flutter.plugin.platform.PlatformView}. Unless {@link
-     * io.flutter.plugin.platform.PlatformView}s are required developers should strongly prefer the
-     * {@link RenderMode#surface} render mode.
-     */
-    image
-  }
-
-  /**
-   * Transparency mode for a {@code FlutterView}.
-   *
-   * <p>Deprecated - please use {@link io.flutter.embedding.android.TransparencyMode} instead.
-   *
-   * <p>{@code TransparencyMode} impacts the visual behavior and performance of a {@link
-   * FlutterSurfaceView}, which is displayed when a {@code FlutterView} uses {@link
-   * RenderMode#surface}.
-   *
-   * <p>{@code TransparencyMode} does not impact {@link FlutterTextureView}, which is displayed when
-   * a {@code FlutterView} uses {@link RenderMode#texture}, because a {@link FlutterTextureView}
-   * automatically comes with transparency.
-   */
-  @Deprecated
-  public enum TransparencyMode {
-    /**
-     * Renders a {@code FlutterView} without any transparency. This affects {@code FlutterView}s in
-     * {@link io.flutter.embedding.android.RenderMode#surface} by introducing a base color of black,
-     * and places the {@link FlutterSurfaceView}'s {@code Window} behind all other content.
-     *
-     * <p>In {@link io.flutter.embedding.android.RenderMode#surface}, this mode is the most
-     * performant and is a good choice for fullscreen Flutter UIs that will not undergo {@code
-     * Fragment} transactions. If this mode is used within a {@code Fragment}, and that {@code
-     * Fragment} is replaced by another one, a brief black flicker may be visible during the switch.
-     */
-    opaque,
-    /**
-     * Renders a {@code FlutterView} with transparency. This affects {@code FlutterView}s in {@link
-     * io.flutter.embedding.android.RenderMode#surface} by allowing background transparency, and
-     * places the {@link FlutterSurfaceView}'s {@code Window} on top of all other content.
-     *
-     * <p>In {@link io.flutter.embedding.android.RenderMode#surface}, this mode is less performant
-     * than {@link #opaque}, but this mode avoids the black flicker problem that {@link #opaque} has
-     * when going through {@code Fragment} transactions. Consider using this {@code
-     * TransparencyMode} if you intend to switch {@code Fragment}s at runtime that contain a Flutter
-     * UI.
-     */
-    transparent
   }
 
   /**

@@ -34,6 +34,7 @@ import io.flutter.util.Preconditions;
 import io.flutter.view.AccessibilityBridge;
 import io.flutter.view.FlutterCallbackInformation;
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
@@ -61,10 +62,9 @@ import java.util.concurrent.CopyOnWriteArraySet;
  * <p>Despite the fact that individual JNI calls are inherently static, there is state that exists
  * within {@code FlutterJNI}. Most calls within {@code FlutterJNI} correspond to a specific
  * "platform view", of which there may be many. Therefore, each {@code FlutterJNI} instance holds
- * onto a "native platform view ID" after {@link #attachToNative(boolean)}, which is shared with the
- * native C/C++ engine code. That ID is passed to every platform-view-specific native method. ID
- * management is handled within {@code FlutterJNI} so that developers don't have to hold onto that
- * ID.
+ * onto a "native platform view ID" after {@link #attachToNative()}, which is shared with the native
+ * C/C++ engine code. That ID is passed to every platform-view-specific native method. ID management
+ * is handled within {@code FlutterJNI} so that developers don't have to hold onto that ID.
  *
  * <p>To connect part of an Android app to Flutter's C/C++ engine, instantiate a {@code FlutterJNI}
  * and then attach it to the native side:
@@ -135,6 +135,8 @@ public class FlutterJNI {
     FlutterJNI.prefetchDefaultFontManagerCalled = true;
   }
 
+  private static native void nativePrefetchDefaultFontManager();
+
   private static boolean prefetchDefaultFontManagerCalled = false;
 
   /**
@@ -165,6 +167,14 @@ public class FlutterJNI {
     FlutterJNI.initCalled = true;
   }
 
+  private static native void nativeInit(
+      @NonNull Context context,
+      @NonNull String[] args,
+      @Nullable String bundlePath,
+      @NonNull String appStoragePath,
+      @NonNull String engineCachesPath,
+      long initTimeMillis);
+
   private static boolean initCalled = false;
   // END methods related to FlutterLoader
 
@@ -175,20 +185,6 @@ public class FlutterJNI {
 
   // This is set from native code via JNI.
   @Nullable private static String observatoryUri;
-
-  /** @deprecated Use {@link #init(Context, String[], String, String, String, long)} instead. */
-  @Deprecated
-  public static native void nativeInit(
-      @NonNull Context context,
-      @NonNull String[] args,
-      @Nullable String bundlePath,
-      @NonNull String appStoragePath,
-      @NonNull String engineCachesPath,
-      long initTimeMillis);
-
-  /** @deprecated Use {@link #prefetchDefaultFontManager()} instead. */
-  @Deprecated
-  public static native void nativePrefetchDefaultFontManager();
 
   private native boolean nativeGetIsSoftwareRenderingEnabled();
 
@@ -242,7 +238,7 @@ public class FlutterJNI {
 
   // TODO(mattcarroll): add javadocs
   public static native void nativeOnVsync(
-      long frameTimeNanos, long frameTargetTimeNanos, long cookie);
+      long frameDelayNanos, long refreshPeriodNanos, long cookie);
 
   // TODO(mattcarroll): add javadocs
   @NonNull
@@ -305,18 +301,18 @@ public class FlutterJNI {
    * <p>This method must not be invoked if {@code FlutterJNI} is already attached to native.
    */
   @UiThread
-  public void attachToNative(boolean isBackgroundView) {
+  public void attachToNative() {
     ensureRunningOnMainThread();
     ensureNotAttachedToNative();
-    nativeShellHolderId = performNativeAttach(this, isBackgroundView);
+    nativeShellHolderId = performNativeAttach(this);
   }
 
   @VisibleForTesting
-  public long performNativeAttach(@NonNull FlutterJNI flutterJNI, boolean isBackgroundView) {
-    return nativeAttach(flutterJNI, isBackgroundView);
+  public long performNativeAttach(@NonNull FlutterJNI flutterJNI) {
+    return nativeAttach(flutterJNI);
   }
 
-  private native long nativeAttach(@NonNull FlutterJNI flutterJNI, boolean isBackgroundView);
+  private native long nativeAttach(@NonNull FlutterJNI flutterJNI);
 
   /**
    * Spawns a new FlutterJNI instance from the current instance.
@@ -326,7 +322,7 @@ public class FlutterJNI {
    * FlutterJNI by calling its standard constructor.
    *
    * <p>This can only be called once the current FlutterJNI instance is attached by calling {@link
-   * #attachToNative(boolean)}.
+   * #attachToNative()}.
    *
    * <p>Static methods that should be only called once such as {@link #init(Context, String[],
    * String, String, String, long)} or {@link #setRefreshRateFPS(float)} shouldn't be called again
@@ -335,11 +331,14 @@ public class FlutterJNI {
   @UiThread
   @NonNull
   public FlutterJNI spawn(
-      @Nullable String entrypointFunctionName, @Nullable String pathToEntrypointFunction) {
+      @Nullable String entrypointFunctionName,
+      @Nullable String pathToEntrypointFunction,
+      @Nullable String initialRoute) {
     ensureRunningOnMainThread();
     ensureAttachedToNative();
     FlutterJNI spawnedJNI =
-        nativeSpawn(nativeShellHolderId, entrypointFunctionName, pathToEntrypointFunction);
+        nativeSpawn(
+            nativeShellHolderId, entrypointFunctionName, pathToEntrypointFunction, initialRoute);
     Preconditions.checkState(
         spawnedJNI.nativeShellHolderId != null && spawnedJNI.nativeShellHolderId != 0,
         "Failed to spawn new JNI connected shell from existing shell.");
@@ -350,7 +349,8 @@ public class FlutterJNI {
   private native FlutterJNI nativeSpawn(
       long nativeSpawningShellId,
       @Nullable String entrypointFunctionName,
-      @Nullable String pathToEntrypointFunction);
+      @Nullable String pathToEntrypointFunction,
+      @Nullable String initialRoute);
 
   /**
    * Detaches this {@code FlutterJNI} instance from Flutter's native engine, which precludes any
@@ -359,7 +359,7 @@ public class FlutterJNI {
    * <p>This method must not be invoked if {@code FlutterJNI} is not already attached to native.
    *
    * <p>Invoking this method will result in the release of all native-side resources that were set
-   * up during {@link #attachToNative(boolean)} or {@link #spawn(String, String)}, or accumulated
+   * up during {@link #attachToNative()} or {@link #spawn(String, String, String)}, or accumulated
    * thereafter.
    *
    * <p>It is permissible to re-attach this instance to native after detaching it from native.
@@ -647,7 +647,7 @@ public class FlutterJNI {
    *
    * <p>The {@code buffer} and {@code strings} form a communication protocol that is implemented
    * here:
-   * https://github.com/flutter/engine/blob/master/shell/platform/android/platform_view_android.cc#L207
+   * https://github.com/flutter/engine/blob/main/shell/platform/android/platform_view_android.cc#L207
    */
   @SuppressWarnings("unused")
   @UiThread
@@ -668,7 +668,7 @@ public class FlutterJNI {
    *
    * <p>The {@code buffer} and {@code strings} form a communication protocol that is implemented
    * here:
-   * https://github.com/flutter/engine/blob/master/shell/platform/android/platform_view_android.cc#L207
+   * https://github.com/flutter/engine/blob/main/shell/platform/android/platform_view_android.cc#L207
    *
    * <p>// TODO(cbracken): expand these docs to include more actionable information.
    */
@@ -756,11 +756,14 @@ public class FlutterJNI {
   public void registerTexture(long textureId, @NonNull SurfaceTextureWrapper textureWrapper) {
     ensureRunningOnMainThread();
     ensureAttachedToNative();
-    nativeRegisterTexture(nativeShellHolderId, textureId, textureWrapper);
+    nativeRegisterTexture(
+        nativeShellHolderId, textureId, new WeakReference<SurfaceTextureWrapper>(textureWrapper));
   }
 
   private native void nativeRegisterTexture(
-      long nativeShellHolderId, long textureId, @NonNull SurfaceTextureWrapper textureWrapper);
+      long nativeShellHolderId,
+      long textureId,
+      @NonNull WeakReference<SurfaceTextureWrapper> textureWrapper);
 
   /**
    * Call this method to inform Flutter that a texture previously registered with {@link
@@ -1067,7 +1070,7 @@ public class FlutterJNI {
   /** Invoked by native to obtain the results of Android's locale resolution algorithm. */
   @SuppressWarnings("unused")
   @VisibleForTesting
-  String[] computePlatformResolvedLocale(@NonNull String[] strings) {
+  public String[] computePlatformResolvedLocale(@NonNull String[] strings) {
     if (localizationPlugin == null) {
       return new String[0];
     }

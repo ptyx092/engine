@@ -2018,7 +2018,8 @@ TEST_F(EmbedderTest,
 
   constexpr size_t frames_expected = 10;
   fml::CountDownLatch frame_latch(frames_expected);
-  size_t frames_seen = 0;
+  static size_t frames_seen;
+  frames_seen = 0;
   context.AddNativeCallback("SignalNativeTest",
                             CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) {
                               frames_seen++;
@@ -2027,6 +2028,8 @@ TEST_F(EmbedderTest,
   frame_latch.Wait();
 
   ASSERT_EQ(frames_expected, frames_seen);
+
+  FlutterEngineShutdown(engine.release());
 }
 
 TEST_F(EmbedderTest,
@@ -2056,7 +2059,8 @@ TEST_F(EmbedderTest,
 
   constexpr size_t frames_expected = 10;
   fml::CountDownLatch frame_latch(frames_expected);
-  size_t frames_seen = 0;
+  static size_t frames_seen;
+  frames_seen = 0;
   context.AddNativeCallback("SignalNativeTest",
                             CREATE_NATIVE_ENTRY([&](Dart_NativeArguments args) {
                               frames_seen++;
@@ -2065,6 +2069,8 @@ TEST_F(EmbedderTest,
   frame_latch.Wait();
 
   ASSERT_EQ(frames_expected, frames_seen);
+
+  FlutterEngineShutdown(engine.release());
 }
 
 TEST_F(EmbedderTest, PlatformViewMutatorsAreValid) {
@@ -3531,7 +3537,9 @@ TEST_F(EmbedderTest, CreateInvalidBackingstoreOpenGLTexture) {
         backing_store_out->open_gl.texture.target = 0;
         backing_store_out->open_gl.texture.name = 0;
         backing_store_out->open_gl.texture.format = 0;
-        backing_store_out->open_gl.texture.user_data = new TestCollectOnce();
+        static TestCollectOnce collect_once_user_data;
+        collect_once_user_data = {};
+        backing_store_out->open_gl.texture.user_data = &collect_once_user_data;
         backing_store_out->open_gl.texture.destruction_callback =
             [](void* user_data) {
               reinterpret_cast<TestCollectOnce*>(user_data)->Collect();
@@ -3591,8 +3599,10 @@ TEST_F(EmbedderTest, CreateInvalidBackingstoreOpenGLFramebuffer) {
         backing_store_out->open_gl.type = kFlutterOpenGLTargetTypeFramebuffer;
         backing_store_out->open_gl.framebuffer.target = 0;
         backing_store_out->open_gl.framebuffer.name = 0;
+        static TestCollectOnce collect_once_user_data;
+        collect_once_user_data = {};
         backing_store_out->open_gl.framebuffer.user_data =
-            new TestCollectOnce();
+            &collect_once_user_data;
         backing_store_out->open_gl.framebuffer.destruction_callback =
             [](void* user_data) {
               reinterpret_cast<TestCollectOnce*>(user_data)->Collect();

@@ -19,9 +19,9 @@ import 'package:test_core/src/runner/reporter.dart' as hack;
 import '../browser.dart';
 import '../environment.dart';
 import '../exceptions.dart';
+import '../pipeline.dart';
 import '../test_platform.dart';
 import '../utils.dart';
-import '../watcher.dart';
 
 // Maximum number of tests that run concurrently.
 const int _testConcurrency = int.fromEnvironment('FELT_TEST_CONCURRENCY', defaultValue: 10);
@@ -117,7 +117,7 @@ class RunTestsStep implements PipelineStep {
       );
     }
 
-    // Run all unit-tests as a single batch and with high concurrency.
+    // Run non-screenshot tests with high concurrency.
     if (unitTestFiles.isNotEmpty) {
       await _runTestBatch(
         testFiles: unitTestFiles,
@@ -130,11 +130,11 @@ class RunTestsStep implements PipelineStep {
       _checkExitCode('Unit tests');
     }
 
-    // Run screenshot tests one at a time. Otherwise, tests end up
-    // screenshotting each other.
-    for (final FilePath screenshotTestFilePath in screenshotTestFiles) {
+    // Run screenshot tests one at a time to prevent tests from screenshotting
+    // each other.
+    if (screenshotTestFiles.isNotEmpty) {
       await _runTestBatch(
-        testFiles: <FilePath>[screenshotTestFilePath],
+        testFiles: screenshotTestFiles,
         browserEnvironment: browserEnvironment,
         concurrency: 1,
         expectFailure: false,

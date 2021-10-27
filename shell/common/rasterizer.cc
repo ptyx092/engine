@@ -68,8 +68,8 @@ void Rasterizer::Setup(std::unique_ptr<Surface> surface) {
         delegate_.GetTaskRunners().GetPlatformTaskRunner()->GetTaskQueueId();
     const auto gpu_id =
         delegate_.GetTaskRunners().GetRasterTaskRunner()->GetTaskQueueId();
-    raster_thread_merger_ =
-        fml::MakeRefCounted<fml::RasterThreadMerger>(platform_id, gpu_id);
+    raster_thread_merger_ = fml::RasterThreadMerger::CreateOrShareThreadMerger(
+        delegate_.GetParentRasterThreadMerger(), platform_id, gpu_id);
   }
   if (raster_thread_merger_) {
     raster_thread_merger_->SetMergeUnmergeCallback([=]() {
@@ -94,8 +94,12 @@ void Rasterizer::Teardown() {
   if (raster_thread_merger_.get() != nullptr &&
       raster_thread_merger_.get()->IsMerged()) {
     FML_DCHECK(raster_thread_merger_->IsEnabled());
-    raster_thread_merger_->UnMergeNow();
+    raster_thread_merger_->UnMergeNowIfLastOne();
     raster_thread_merger_->SetMergeUnmergeCallback(nullptr);
+  }
+
+  if (external_view_embedder_) {
+    external_view_embedder_->Teardown();
   }
 }
 
@@ -143,20 +147,21 @@ void Rasterizer::DrawLastLayerTree(
   if (!last_layer_tree_ || !surface_) {
     return;
   }
-  frame_timings_recorder->RecordRasterStart(fml::TimePoint::Now());
+  frame_timings_recorder->RecordRasterStart(
+      fml::TimePoint::Now(), &compositor_context_->raster_cache());
   DrawToSurface(*frame_timings_recorder, *last_layer_tree_);
 }
 
-void Rasterizer::Draw(
+RasterStatus Rasterizer::Draw(
     std::unique_ptr<FrameTimingsRecorder> frame_timings_recorder,
     std::shared_ptr<Pipeline<flutter::LayerTree>> pipeline,
-    LayerTreeDiscardCallback discardCallback) {
+    LayerTreeDiscardCallback discard_callback) {
   TRACE_EVENT_WITH_FRAME_NUMBER(frame_timings_recorder, "flutter",
                                 "GPURasterizer::Draw");
   if (raster_thread_merger_ &&
       !raster_thread_merger_->IsOnRasterizingThread()) {
     // we yield and let this frame be serviced on the right thread.
-    return;
+    return RasterStatus::kYielded;
   }
   FML_DCHECK(delegate_.GetTaskRunners()
                  .GetRasterTaskRunner()
@@ -169,7 +174,7 @@ void Rasterizer::Draw(
   RasterStatus raster_status = RasterStatus::kFailed;
   Pipeline<flutter::LayerTree>::Consumer consumer =
       [&](std::unique_ptr<LayerTree> layer_tree) {
-        if (discardCallback(*layer_tree.get())) {
+        if (discard_callback(*layer_tree.get())) {
           raster_status = RasterStatus::kDiscarded;
         } else {
           raster_status =
@@ -207,9 +212,11 @@ void Rasterizer::Draw(
       delegate_.GetTaskRunners().GetRasterTaskRunner()->PostTask(
           fml::MakeCopyable(
               [weak_this = weak_factory_.GetWeakPtr(), pipeline,
-               resubmit_recorder = std::move(resubmit_recorder)]() mutable {
+               resubmit_recorder = std::move(resubmit_recorder),
+               discard_callback = std::move(discard_callback)]() mutable {
                 if (weak_this) {
-                  weak_this->Draw(std::move(resubmit_recorder), pipeline);
+                  weak_this->Draw(std::move(resubmit_recorder), pipeline,
+                                  std::move(discard_callback));
                 }
               }));
       break;
@@ -217,6 +224,8 @@ void Rasterizer::Draw(
     default:
       break;
   }
+
+  return raster_status;
 }
 
 namespace {
@@ -372,7 +381,8 @@ RasterStatus Rasterizer::DoDraw(
     return RasterStatus::kFailed;
   }
 
-  frame_timings_recorder->RecordRasterStart(fml::TimePoint::Now());
+  frame_timings_recorder->RecordRasterStart(
+      fml::TimePoint::Now(), &compositor_context_->raster_cache());
 
   PersistentCache* persistent_cache = PersistentCache::GetCacheForProcess();
   persistent_cache->ResetStoredNewShaders();
@@ -384,6 +394,8 @@ RasterStatus Rasterizer::DoDraw(
   } else if (raster_status == RasterStatus::kResubmit ||
              raster_status == RasterStatus::kSkipAndRetry) {
     resubmitted_layer_tree_ = std::move(layer_tree);
+    return raster_status;
+  } else if (raster_status == RasterStatus::kDiscarded) {
     return raster_status;
   }
 
@@ -465,6 +477,31 @@ RasterStatus Rasterizer::DrawToSurface(
   TRACE_EVENT0("flutter", "Rasterizer::DrawToSurface");
   FML_DCHECK(surface_);
 
+  RasterStatus raster_status;
+  if (surface_->AllowsDrawingWhenGpuDisabled()) {
+    raster_status = DrawToSurfaceUnsafe(frame_timings_recorder, layer_tree);
+  } else {
+    delegate_.GetIsGpuDisabledSyncSwitch()->Execute(
+        fml::SyncSwitch::Handlers()
+            .SetIfTrue([&] { raster_status = RasterStatus::kDiscarded; })
+            .SetIfFalse([&] {
+              raster_status =
+                  DrawToSurfaceUnsafe(frame_timings_recorder, layer_tree);
+            }));
+  }
+
+  return raster_status;
+}
+
+/// Unsafe because it assumes we have access to the GPU which isn't the case
+/// when iOS is backgrounded, for example.
+/// \see Rasterizer::DrawToSurface
+RasterStatus Rasterizer::DrawToSurfaceUnsafe(
+    FrameTimingsRecorder& frame_timings_recorder,
+    flutter::LayerTree& layer_tree) {
+  TRACE_EVENT0("flutter", "Rasterizer::DrawToSurfaceUnsafe");
+  FML_DCHECK(surface_);
+
   compositor_context_->ui_time().SetLapTime(
       frame_timings_recorder.GetBuildDuration());
 
@@ -503,35 +540,23 @@ RasterStatus Rasterizer::DrawToSurface(
       frame->supports_readback(),     // surface supports pixel reads
       raster_thread_merger_           // thread merger
   );
-
   if (compositor_frame) {
     RasterStatus raster_status = compositor_frame->Raster(layer_tree, false);
     if (raster_status == RasterStatus::kFailed ||
         raster_status == RasterStatus::kSkipAndRetry) {
       return raster_status;
     }
-    if (shared_engine_block_thread_merging_ && raster_thread_merger_ &&
-        raster_thread_merger_->IsMerged()) {
-      // TODO(73620): Remove when platform views are accounted for.
-      FML_LOG(ERROR)
-          << "Error: Thread merging not implemented for engines with shared "
-             "components.\n\n"
-             "This is likely a result of using platform views with enigne "
-             "groups.  See "
-             "https://github.com/flutter/flutter/issues/73620.";
-      fml::KillProcess();
-    }
     if (external_view_embedder_ &&
         (!raster_thread_merger_ || raster_thread_merger_->IsMerged())) {
       FML_DCHECK(!frame->IsSubmitted());
-      external_view_embedder_->SubmitFrame(
-          surface_->GetContext(), std::move(frame),
-          delegate_.GetIsGpuDisabledSyncSwitch());
+      external_view_embedder_->SubmitFrame(surface_->GetContext(),
+                                           std::move(frame));
     } else {
       frame->Submit();
     }
 
-    frame_timings_recorder.RecordRasterEnd();
+    frame_timings_recorder.RecordRasterEnd(
+        &compositor_context_->raster_cache());
     FireNextFrameCallbackIfPresent();
 
     if (surface_->GetContext()) {
@@ -716,6 +741,10 @@ void Rasterizer::SetExternalViewEmbedder(
 void Rasterizer::SetSnapshotSurfaceProducer(
     std::unique_ptr<SnapshotSurfaceProducer> producer) {
   snapshot_surface_producer_ = std::move(producer);
+}
+
+fml::RefPtr<fml::RasterThreadMerger> Rasterizer::GetRasterThreadMerger() {
+  return raster_thread_merger_;
 }
 
 void Rasterizer::FireNextFrameCallbackIfPresent() {

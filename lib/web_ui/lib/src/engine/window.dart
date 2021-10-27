@@ -20,6 +20,7 @@ import 'navigation/url_strategy.dart';
 import 'platform_dispatcher.dart';
 import 'services.dart';
 import 'test_embedding.dart';
+import 'util.dart';
 
 typedef _HandleMessageCallBack = Future<bool> Function();
 
@@ -50,6 +51,12 @@ class EngineFlutterWindow extends ui.SingletonFlutterWindow {
     if (_isUrlStrategySet) {
       _browserHistory = createHistoryForExistingState(_customUrlStrategy);
     }
+<<<<<<< HEAD
+=======
+    registerHotRestartListener(() {
+      _browserHistory?.dispose();
+    });
+>>>>>>> 8948972d65c45b5248b1c88808f013dfcabc8889
   }
 
   final Object _windowId;
@@ -165,7 +172,7 @@ class EngineFlutterWindow extends ui.SingletonFlutterWindow {
   Future<bool> handleNavigationMessage(ByteData? data) async {
     return _waitInTheLine(() async {
       final MethodCall decoded = const JSONMethodCodec().decodeMethodCall(data);
-      final Map<String, dynamic>? arguments = decoded.arguments;
+      final Map<String, dynamic>? arguments = decoded.arguments as Map<String, dynamic>?;
       switch (decoded.method) {
         case 'selectMultiEntryHistory':
           await _useMultiEntryBrowserHistory();
@@ -177,14 +184,14 @@ class EngineFlutterWindow extends ui.SingletonFlutterWindow {
         case 'routeUpdated': // deprecated
           assert(arguments != null);
           await _useSingleEntryBrowserHistory();
-          browserHistory.setRouteName(arguments!['routeName']);
+          browserHistory.setRouteName(arguments!.tryString('routeName'));
           return true;
         case 'routeInformationUpdated':
           assert(arguments != null);
           browserHistory.setRouteName(
-            arguments!['location'],
+            arguments!.tryString('location'),
             state: arguments['state'],
-            replace: arguments['replace'] ?? false,
+            replace: arguments.tryBool('replace') ?? false,
           );
           return true;
       }
